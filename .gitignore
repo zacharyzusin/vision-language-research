@@ -1,0 +1,16 @@
+# Ignore datasets
+data/
+text_cache/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Checkpoints
+checkpoints/
+*.pt
+
+# Virtual environment
+myenv/
+env/
+venv/

@@ -1,0 +1,13 @@
+dataset:
+  root: data/iNat2018
+  version: 2018
+
+model:
+  clip_model: ViT-B/32
+  K: 32
+  ctx_len: 8
+
+train:
+  batch_size: 32
+  lr: 5e-4
+  epochs: 20
