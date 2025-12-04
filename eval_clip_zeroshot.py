@@ -1,34 +1,89 @@
+#!/usr/bin/env python3
+# eval_clip_zeroshot.py
+
 import os
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 import clip
 
-from src.datasets.inat_dataset import get_inat2018
-from train import extract_hierarchical_metadata   # <-- use SAME function
+from src.datasets.inat_dataset import get_inat2018, extract_hierarchical_metadata
 
 
 @torch.no_grad()
-def run_zero_shot():
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+def build_text_features(model, metadata, device, batch_size=256):
+    """
+    Build zero-shot text embeddings using multiple templates.
+    """
+    print("\nBuilding zero-shot text features...")
 
-    # ----------------------------
+    templates = [
+        "a photo of a {}.",
+        "a wildlife photo of a {}.",
+        "a close-up photo of a {}.",
+        "a natural habitat photo of a {}.",
+        "a high quality image of a {}.",
+        "an organism known as {}.",
+    ]
+
+    prompts = []
+    for md in metadata:
+        species = md["species"]
+        for tmpl in templates:
+            prompts.append(tmpl.format(species))
+
+    print(f"Total prompts = {len(prompts)} "
+          f"= {len(metadata)} classes × {len(templates)} templates")
+
+    tokenized = clip.tokenize(prompts).to(device)
+
+    all_feats = []
+    for i in tqdm(range(0, len(tokenized), batch_size), desc="Encoding text"):
+        batch = tokenized[i : i + batch_size]
+        feat = model.encode_text(batch)
+        feat = F.normalize(feat.float(), dim=-1)
+        all_feats.append(feat)
+
+    all_feats = torch.cat(all_feats, dim=0)  # (C*T, D)
+
+    C = len(metadata)
+    T = len(templates)
+    text_features = all_feats.view(C, T, -1).mean(dim=1)
+    text_features = F.normalize(text_features, dim=-1)
+
+    print("Text features:", text_features.shape)
+    return text_features
+
+
+@torch.no_grad()
+def evaluate_zero_shot():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print("Using device:", device)
+
+    # ------------------------------------------
     # Load CLIP
-    # ----------------------------
-    print("Loading CLIP model: ViT-B/32")
+    # ------------------------------------------
+    print("Loading CLIP ViT-B/32...")
     model, preprocess = clip.load("ViT-B/32", device=device)
     model.eval()
 
-    # ----------------------------
-    # Load BOTH train + val sets
-    # ----------------------------
-    root = os.path.join(os.path.dirname(__file__), "data/iNat2018")
+    # ------------------------------------------
+    # Load dataset splits
+    # ------------------------------------------
+    root = os.path.join("data", "iNat2018")
 
-    train_ds = get_inat2018(root, split="train")     # <-- ensures class order matches training
-    val_ds   = get_inat2018(root, split="val")
+    print("\nLoading iNat2018 splits...")
+    train_ds = get_inat2018(root, split="train")  # only to ensure class ordering
+    val_ds = get_inat2018(root, split="val")
     val_ds.transform = preprocess
 
-    print(f"Loaded iNat2018 split: val, samples={len(val_ds)}, classes={len(train_ds.categories)}")
+    # ------------------------------------------
+    # Load metadata (defines class ordering)
+    # ------------------------------------------
+    metadata = extract_hierarchical_metadata(root)
+    num_classes = len(metadata)
+
+    print(f"Validation samples: {len(val_ds)}, classes: {num_classes}")
 
     val_loader = torch.utils.data.DataLoader(
         val_ds,
@@ -38,84 +93,40 @@ def run_zero_shot():
         pin_memory=True,
     )
 
-    # ----------------------------
-    # Extract SAME metadata as training
-    # ----------------------------
-    metadata = extract_hierarchical_metadata(train_ds)  
-    num_classes = len(metadata)
+    # ------------------------------------------
+    # Build text embeddings
+    # ------------------------------------------
+    text_features = build_text_features(model, metadata, device)
 
-    print(f"Loaded iNat2018 val set: {len(val_ds)} samples, {num_classes} classes")
-
-    # ----------------------------
-    # Build prompts
-    # ----------------------------
-    templates = [
-        "a photo of a {species}",
-        "a wildlife photo of the species {scientific_name}",
-        "a photograph of an organism in genus {genus}",
-        "an organism belonging to family {family}",
-        "a close-up photo of a {species}",
-    ]
-
-    prompts = []
-    for md in metadata:
-        for t in templates:
-            prompts.append(
-                t.format(
-                    species=md["species"],
-                    scientific_name=md["scientific_name"],
-                    genus=md["genus"],
-                    family=md["family"],
-                )
-            )
-
-    # ----------------------------
-    # Encode prompts in batches
-    # ----------------------------
-    print("Encoding text prompts...")
-    tokenized = clip.tokenize(prompts).to(device)
-    BATCH = 128
-
-    all_feats = []
-    for i in tqdm(range(0, len(tokenized), BATCH), desc="Encoding text"):
-        batch = tokenized[i : i + BATCH]
-        emb = model.encode_text(batch).float()
-        emb = F.normalize(emb, dim=-1)
-        all_feats.append(emb.cpu())
-
-    all_feats = torch.cat(all_feats, dim=0)
-
-    T = len(templates)
-    C = num_classes
-    D = all_feats.size(-1)
-
-    text_features = all_feats.view(C, T, D).mean(dim=1)
-    text_features = F.normalize(text_features, dim=-1).to(device)
-
-    # ----------------------------
+    # ------------------------------------------
     # Evaluate
-    # ----------------------------
-    print("Running zero-shot inference...")
+    # ------------------------------------------
+    print("\nEvaluating zero-shot CLIP...")
 
     correct = 0
     total = 0
 
     for imgs, labels in tqdm(val_loader):
-        imgs, labels = imgs.to(device), labels.to(device)
+        imgs = imgs.to(device)
+        labels = labels.to(device)
 
         img_feat = model.encode_image(imgs).float()
         img_feat = F.normalize(img_feat, dim=-1)
 
-        sims = img_feat @ text_features.T
+        # similarity (B, C)
+        sims = img_feat @ text_features.t()
         preds = sims.argmax(dim=1)
 
         correct += (preds == labels).sum().item()
         total += len(labels)
 
     acc = correct / total
-    print(f"\nZero-shot CLIP ViT-B/32 Accuracy: {acc:.4f}")
+    print("\n======================================")
+    print(f"Zero-Shot CLIP (ViT-B/32) Accuracy: {acc:.4f}")
+    print("======================================\n")
+
     return acc
 
 
 if __name__ == "__main__":
-    run_zero_shot()
+    evaluate_zero_shot()

@@ -4,10 +4,12 @@ dataset:
 
 model:
   clip_model: ViT-B/32
-  K: 32
-  ctx_len: 8
+  K: 8          # number of sub-prompts per class
+  ctx_len: 4    # number of learnable context tokens per sub-prompt
+  em_tau: 1.0   # temperature for responsibilities (E-step)
 
 train:
   batch_size: 32
   lr: 5e-4
   epochs: 20
+  warmup_steps: 1000

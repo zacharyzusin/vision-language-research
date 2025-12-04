@@ -12,8 +12,15 @@ from torchvision.datasets import INaturalist
 
 
 def _make_transform():
+    def _safe_load(img):
+        try:
+            return img.convert("RGB")
+        except Exception:
+            import PIL.Image as Image
+            return Image.new("RGB", (224, 224))
+
     return T.Compose([
-        lambda img: img.convert("RGB"), 
+        _safe_load,
         T.Resize(256),
         T.CenterCrop(224),
         T.ToTensor(),
@@ -22,7 +29,6 @@ def _make_transform():
             std=(0.26862954, 0.26130258, 0.27577711)
         )
     ])
-
 
 
 def _load_split_paths(root: str):

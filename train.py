@@ -2,6 +2,7 @@ import os
 import argparse
 import yaml
 import math
+import time
 
 import torch
 from torch.utils.data import DataLoader
@@ -19,15 +20,24 @@ def load_config(path):
 
 @torch.no_grad()
 def validate(model, dataloader, device):
+    """
+    Fast validation using cached prompt features (Option C).
+    """
     model.eval()
+
     total = 0
     correct = 0
+
+    start_time = time.time()
 
     for imgs, labels in tqdm(dataloader, desc="Validating", leave=False):
         imgs, labels = imgs.to(device), labels.to(device)
         preds = model.predict(imgs)
         correct += (preds == labels).sum().item()
         total += len(labels)
+
+    duration = time.time() - start_time
+    print(f"[Validation] time = {duration:.2f}s")
 
     return correct / total if total else 0.0
 
@@ -46,16 +56,15 @@ def train(config, resume=None):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("Using device:", device)
 
-    root = config["dataset"]["root"]  # e.g., "data/iNat2018"
+    root = config["dataset"]["root"]
 
-    print("\n=== Loading INaturalist 2018 via torchvision + JSON splits ===")
+    print("\n=== Loading INaturalist 2018 dataset ===")
     train_ds = get_inat2018(root, "train")
     val_ds = get_inat2018(root, "val")
 
     print(f"Train samples: {len(train_ds)}")
     print(f"Val samples:   {len(val_ds)}")
 
-    # DataLoaders
     train_loader = DataLoader(
         train_ds,
         batch_size=config["train"]["batch_size"],
@@ -74,7 +83,6 @@ def train(config, resume=None):
         persistent_workers=True,
     )
 
-    # Hierarchical metadata (species / genus / family / order)
     metadata = extract_hierarchical_metadata(root)
     num_classes = len(metadata)
     print(f"Num classes (species): {num_classes}")
@@ -86,9 +94,6 @@ def train(config, resume=None):
         ctx_len=config["model"]["ctx_len"],
     ).to(device)
 
-    # -------------------------------------------
-    # Print summary
-    # -------------------------------------------
     print("\n================= RUN CONFIG SUMMARY =================")
     print(f"Model: {config['model']['clip_model']}")
     print(f"Dataset Root: {root}")
@@ -100,7 +105,7 @@ def train(config, resume=None):
     optimizer = torch.optim.Adam(model.parameters(), lr=float(config["train"]["lr"]))
     scaler = GradScaler("cuda" if device == "cuda" else "cpu")
 
-
+    # Load checkpoint if needed
     start_epoch = 1
     best_val = 0.0
     step = 0
@@ -117,14 +122,23 @@ def train(config, resume=None):
 
     os.makedirs("checkpoints", exist_ok=True)
 
-    # -----------------
-    # Training loop
-    # -----------------
+    # -----------------------------------------------------------------
+    # BUILD INFERENCE CACHE ONCE BEFORE TRAINING
+    # -----------------------------------------------------------------
+    print("\n=== Building inference prompt cache BEFORE training ===")
+    model.eval()
+    dummy = torch.randn(1, 3, 224, 224).to(device)
+    model.predict(dummy)  # triggers cache build
+
+    # -----------------------------------------------------------------
+    # TRAINING LOOP
+    # -----------------------------------------------------------------
     for epoch in range(start_epoch, config["train"]["epochs"] + 1):
         model.train()
-        running = 0.0
+        running_loss = 0.0
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
+
         for imgs, labels in pbar:
             imgs, labels = imgs.to(device), labels.to(device)
 
@@ -139,6 +153,7 @@ def train(config, resume=None):
             step += 1
 
             optimizer.zero_grad(set_to_none=True)
+
             with autocast(device):
                 loss = model(imgs, labels)
 
@@ -146,11 +161,14 @@ def train(config, resume=None):
             scaler.step(optimizer)
             scaler.update()
 
-            running += loss.item()
+            running_loss += loss.item()
             pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
-        print(f"Epoch {epoch}: Train Loss = {running / len(train_loader):.4f}")
+        print(f"Epoch {epoch}: Train Loss = {running_loss / len(train_loader):.4f}")
 
+        # -------------------------------------------------------------
+        # VALIDATE — fast because of prebuilt cache
+        # -------------------------------------------------------------
         acc = validate(model, val_loader, device)
         print(f"Epoch {epoch}: Val Acc = {acc:.4f}")
 
