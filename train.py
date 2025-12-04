@@ -40,7 +40,7 @@ def validate(model, dataloader, device):
     total = 0
     correct = 0
 
-    for imgs, labels in tqdm(dataloader, desc="Validating", leave=False):
+    for imgs, labels in tqdm(dataloader, desc="Validating", leave=False, ncols=80):
         imgs, labels = imgs.to(device), labels.to(device)
         preds = model.predict(imgs)
         correct += (preds == labels).sum().item()
@@ -101,13 +101,11 @@ def train(config, resume=None):
     model = MixturePromptCLIP(
         clip_model=config["model"]["clip_model"],
         metadata=metadata,
-        K=config["model"]["K"],
-        ctx_len=config["model"]["ctx_len"],
+        K=int(config["model"]["K"]),
+        ctx_len=int(config["model"]["ctx_len"]),
+        em_tau=float(config["model"].get("em_tau", 1.0)),
     ).to(device)
 
-    # -----------------------------------------------------------
-    # Optimizer + scaler + resume state
-    # -----------------------------------------------------------
     optimizer = torch.optim.Adam(model.parameters(), lr=float(config["train"]["lr"]))
     scaler = GradScaler()
 
@@ -115,7 +113,7 @@ def train(config, resume=None):
     best_val = 0.0
     step = 0
 
-    # Resume from checkpoint
+    # Resume if requested
     if resume and os.path.exists(resume):
         print(f"Resuming from checkpoint: {resume}")
         ckpt = torch.load(resume, map_location=device)
@@ -131,7 +129,6 @@ def train(config, resume=None):
         print(f" → Resumed at epoch {start_epoch}, step {step}, best_val={best_val:.4f}")
 
     os.makedirs("checkpoints", exist_ok=True)
-
     max_steps = len(train_loader) * config["train"]["epochs"]
 
     # -----------------------------------------------------------
@@ -145,7 +142,7 @@ def train(config, resume=None):
         for imgs, labels in pbar:
             imgs, labels = imgs.to(device), labels.to(device)
 
-            # Learning rate schedule
+            # LR schedule
             cosine_lr(
                 optimizer,
                 config["train"]["lr"],
@@ -158,7 +155,7 @@ def train(config, resume=None):
             optimizer.zero_grad(set_to_none=True)
 
             with autocast(device):
-                loss = model(imgs, labels)
+                loss = model(images=imgs, labels=labels)
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -169,11 +166,9 @@ def train(config, resume=None):
 
         print(f"Epoch {epoch}: Train Loss = {running / len(train_loader):.4f}")
 
-        # Validate
         acc = validate(model, val_loader, device)
         print(f"Epoch {epoch}: Val Acc = {acc:.4f}")
 
-        # Save best checkpoint
         if acc > best_val:
             best_val = acc
             save_checkpoint(
@@ -183,16 +178,13 @@ def train(config, resume=None):
                 model,
                 optimizer,
                 scaler,
-                best_val
+                best_val,
             )
             print("Saved new best checkpoint!")
 
     print("Training complete. Best Val Acc =", best_val)
 
 
-# ---------------------------------------------------------------
-# Main entry
-# ---------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/default.yaml")

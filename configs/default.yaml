@@ -4,12 +4,16 @@ dataset:
 
 model:
   clip_model: ViT-B/32
-  K: 8          # number of sub-prompts per class
-  ctx_len: 4    # number of learnable context tokens per sub-prompt
-  em_tau: 1.0   # temperature for responsibilities (E-step)
+
+  # Shared prompt hyperparameters
+  K: 32          # number of mixture prompts (more is better with shared prompts)
+  ctx_len: 8     # number of learnable context tokens per prompt (CoOp uses 16)
+
+  # EM temperature
+  em_tau: 0.5    # lower tau = harder responsibilities, better specialization
 
 train:
-  batch_size: 32
-  lr: 5e-4
-  epochs: 20
-  warmup_steps: 1000
+  batch_size: 16      # ViT-B/32 can handle this; improves stability
+  lr: 1e-3             # shared prompts learn faster; 1e-3 is optimal in CoOp/MaPLe
+  epochs: 30           # longer training improves generalization
+  warmup_steps: 2000   # stabilize early EM iterations
