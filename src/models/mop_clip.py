@@ -1,69 +1,65 @@
+import os
+from typing import List, Dict
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import clip
 from tqdm import tqdm
-from typing import List, Dict
+import clip
 
 
 class MixturePromptCLIP(nn.Module):
     """
-    EM-based Mixture-of-Prompts CLIP with SHARED prompts (CoOp-style).
-
-    Key design:
-      - CLIP is frozen (vision + text).
-      - We learn K shared prompt tokens, each with ctx_len learnable tokens.
-      - For each class, we build K sub-prompts by inserting these shared
-        context tokens into the class-specific text template.
-      - Training uses EM:
-          - E-step: responsibilities gamma over K (detached).
-          - M-step: maximize gamma-weighted similarity for ground-truth class.
-      - Inference:
-          - For each class, score = max over K sub-prompts.
-      - Caching:
-          - A: cache base token embeddings per class.
-          - B: reuse positional embeddings.
-          - C: build (C, K, D) prompt cache once per device for fast predict().
+    Mixture-of-Prompts CLIP with:
+      • Shared K × ctx_len learnable context tokens
+      • EM-style training objective over K prompts per class
+      • GPU-accelerated prompt cache building (chunked for safety)
+      • CPU-stored prompt cache for inference
+      • Disk caching so prompt cache is built only once
     """
 
     def __init__(
         self,
         clip_model: str,
         metadata: List[Dict],
-        K: int = 8,
-        ctx_len: int = 4,
-        em_tau: float = 1.0,
+        K: int = 32,
+        ctx_len: int = 8,
+        em_tau: float = 0.5,
+        cache_dir: str = "text_cache",
     ):
         super().__init__()
 
+        # ---------------------------
+        # Basic config
+        # ---------------------------
+        self.clip_model_name = clip_model
+        self.metadata = metadata
+        self.num_classes = len(metadata)
         self.K = int(K)
         self.ctx_len = int(ctx_len)
         self.em_tau = float(em_tau)
 
-        # ------------------------------------------
-        # Load CLIP and freeze
-        # ------------------------------------------
+        # ---------------------------
+        # Load CLIP
+        # ---------------------------
         print(f"Loading CLIP model: {clip_model}")
-        clip_model_obj, _ = clip.load(clip_model, device="cpu")
-        self.clip = clip_model_obj
-        self.clip.eval()
-
+        clip_model_gpu, _ = clip.load(clip_model, device="cpu")
+        self.clip = clip_model_gpu.eval()
         for p in self.clip.parameters():
             p.requires_grad = False
 
-        self.metadata = metadata
-        self.num_classes = len(metadata)
-        self.text_width = self.clip.ln_final.weight.shape[0]
+        # Text embedding dim
+        self.D = self.clip.text_projection.shape[0]
 
-        # ------------------------------------------
-        # Build base prompts and tokenize
-        # ------------------------------------------
+        # ---------------------------
+        # Build text prompts
+        # ---------------------------
         def make_prompt(md: Dict) -> str:
-            # "X " placeholders for ctx_len positions, which we overwrite
+            # Use "X " tokens as placeholders for learnable context
             return (
                 "X " * self.ctx_len
                 + f"a photo of {md['species']}, an organism in genus {md['genus']} "
-                  f"and family {md['family']} in the order {md['order']}."
+                  f"and family {md['family']} belonging to order {md['order']}."
             )
 
         prompts = [make_prompt(md) for md in metadata]
@@ -72,187 +68,235 @@ class MixturePromptCLIP(nn.Module):
         class_tokens = clip.tokenize(prompts)  # (C, 77)
         self.register_buffer("class_tokens", class_tokens, persistent=True)
 
-        # ------------------------------------------
-        # CACHE A: precompute base token embeddings per class
-        # ------------------------------------------
+        # Base token embeddings & positional embeddings (CPU only)
         with torch.no_grad():
-            base_embeds = self.clip.token_embedding(self.class_tokens)  # (C, L, D)
-        self.register_buffer("base_token_embeds", base_embeds, persistent=True)
-        self.seq_len = base_embeds.size(1)
+            base_emb = self.clip.token_embedding(self.class_tokens)  # (C, L, D)
+        self.base_token_embeds_cpu = base_emb.cpu()  # plain tensor on CPU
 
-        # CACHE B: positional embeddings
-        self.register_buffer(
-            "positional_embedding",
-            self.clip.positional_embedding.clone().detach(),
-            persistent=True,
-        )
+        self.positional_embedding_cpu = (
+            self.clip.positional_embedding.detach().clone().cpu()
+        )  # (L, D)
 
-        # ------------------------------------------
-        # SHARED context tokens: (K, ctx_len, D)
-        # These are shared across all classes.
-        # ------------------------------------------
-        ctx_shape = (self.K, self.ctx_len, self.text_width)
-        ctx = torch.empty(ctx_shape, dtype=base_embeds.dtype)
+        self.seq_len = self.base_token_embeds_cpu.size(1)  # e.g. 77
+
+        # ---------------------------
+        # Shared K × ctx_len context tokens
+        # ---------------------------
+        ctx_shape = (self.K, self.ctx_len, self.D)
+        ctx = torch.empty(ctx_shape)
         nn.init.normal_(ctx, std=0.02)
         self.context_tokens = nn.Parameter(ctx)
 
         print(
-            f"Initialized SHARED context tokens with shape {ctx_shape} "
+            f"Initialized SHARED context tokens {ctx_shape} "
             f"(~{ctx.numel() / 1e6:.3f}M params)"
         )
 
-        # ------------------------------------------
-        # Inference cache holder
-        # ------------------------------------------
-        self._inference_prompt_feats = None  # (C, K, D)
-        self._inference_prompt_device = None
+        # ---------------------------
+        # Prompt cache (CPU + disk)
+        # ---------------------------
+        self.cache_dir = cache_dir
+        os.makedirs(self.cache_dir, exist_ok=True)
+        safe_name = clip_model.replace("/", "_")
+        self.prompt_cache_path = os.path.join(
+            self.cache_dir,
+            f"{safe_name}_K{self.K}_ctx{self.ctx_len}_prompt_cache.pt",
+        )
 
-    # -----------------------------------------------------------
-    # Encode prompts for given class indices (uses shared prompts)
-    # -----------------------------------------------------------
-    def _encode_prompts_for_classes(self, class_indices: torch.Tensor) -> torch.Tensor:
+        self._prompt_cache_cpu = None  # (C, K, D) on CPU once built
+
+    # ======================================================================
+    # GPU prompt encoder for training (labels in a batch)
+    # ======================================================================
+    def _encode_prompts_for_classes_gpu(self, class_indices: torch.Tensor) -> torch.Tensor:
         """
-        Encode prompts (with K shared context prompts) for given class indices.
-
-        Args:
-            class_indices: LongTensor of shape (B,)
-
-        Returns:
-            prompt_features: Tensor of shape (B, K, D)
+        Encode prompts for the classes in 'class_indices' on GPU.
+        Used during training (batch-sized).
+        Returns shape: (B, K, D)
         """
         device = class_indices.device
         class_indices = class_indices.long()
 
-        # unique classes to avoid redundant computation
         unique, inv = torch.unique(class_indices, sorted=True, return_inverse=True)
-        C_u = unique.shape[0]
+        C_u = unique.numel()
 
-        # (C_u, L, D)
-        x = self.base_token_embeds[unique].to(device)
+        # Base token embeddings -> GPU
+        base_emb = self.base_token_embeds_cpu.to(device)  # (C, L, D)
+        x = base_emb[unique]                              # (C_u, L, D)
 
-        # Expand to (C_u, K, L, D) for K sub-prompts per class
-        # We'll broadcast shared context tokens over classes
+        # Expand over K prompts
         x = x.unsqueeze(1).expand(-1, self.K, -1, -1).contiguous()  # (C_u,K,L,D)
 
-        # Get shared context tokens (K, ctx_len, D) and expand over classes
-        shared_ctx = self.context_tokens.to(device)  # (K, ctx_len, D)
-        # (1,K,ctx_len,D) -> (C_u,K,ctx_len,D)
-        shared_ctx = shared_ctx.unsqueeze(0).expand(C_u, -1, -1, -1)
-
-        # Insert shared context tokens at positions [1..ctx_len]
-        x[:, :, 1:1 + self.ctx_len, :] = shared_ctx
+        # Insert shared context at positions [1..ctx_len]
+        ctx = self.context_tokens.to(device)  # (K, ctx_len, D)
+        ctx = ctx.unsqueeze(0).expand(C_u, -1, -1, -1)              # (C_u,K,ctx_len,D)
+        x[:, :, 1 : 1 + self.ctx_len, :] = ctx
 
         # Add positional embeddings
-        pos = self.positional_embedding.to(device)  # (L,D)
-        x = x + pos  # broadcast over (C_u, K, L, D)
+        pos = self.positional_embedding_cpu.to(device)  # (L, D)
+        x = x + pos                                     # broadcast to (C_u,K,L,D)
 
+        # Flatten for CLIP text transformer
         C_uK = C_u * self.K
-        x = x.view(C_uK, self.seq_len, -1)  # (C_u*K, L, D)
+        x = x.view(C_uK, self.seq_len, -1)         # (C_uK, L, D)
+        x = x.permute(1, 0, 2)                     # (L, C_uK, D)
 
-        # Transformer expects (L, N, D)
-        x = x.permute(1, 0, 2)  # (L, C_uK, D)
         x = self.clip.transformer(x)
-        x = x.permute(1, 0, 2)  # (C_uK, L, D)
-
+        x = x.permute(1, 0, 2)                     # (C_uK, L, D)
         x = self.clip.ln_final(x)
 
-        # EOT (end-of-text) indices
-        token_ids = self.class_tokens[unique].to(device)  # (C_u, L)
-        token_ids = token_ids.unsqueeze(1).expand(-1, self.K, -1).reshape(C_uK, -1)
-        eot_indices = token_ids.argmax(dim=-1)
+        # End-of-text indices
+        ct = self.class_tokens.to(device)          # (C, L)
+        token_ids = ct[unique]                     # (C_u, L)
+        token_ids = (
+            token_ids.unsqueeze(1)
+            .expand(-1, self.K, -1)
+            .reshape(C_uK, -1)
+        )
+        eot = token_ids.argmax(dim=-1)             # (C_uK,)
 
-        # (C_uK, D)
-        text_embeds = x[torch.arange(C_uK, device=device), eot_indices]
-        text_embeds = text_embeds @ self.clip.text_projection.to(device)
+        # Gather final text embeddings
+        text_embeds = x[torch.arange(C_uK, device=device), eot]  # (C_uK, D)
+        text_embeds = text_embeds @ self.clip.text_projection    # (C_uK, D)
         text_embeds = F.normalize(text_embeds, dim=-1)
 
-        # (C_u, K, D)
+        # Reshape back to (C_u, K, D)
         text_embeds = text_embeds.view(C_u, self.K, -1)
 
-        # Map back to original order
-        prompt_features = text_embeds[inv]  # (B, K, D)
-        return prompt_features
+        # Reorder to match original class_indices
+        return text_embeds[inv]  # (B, K, D)
 
-    # -----------------------------------------------------------
-    # TRAINING FORWARD (EM style)
-    # -----------------------------------------------------------
+    # ======================================================================
+    # GPU prompt encoder for cache-building (large class chunks)
+    # ======================================================================
+    @torch.no_grad()
+    def _encode_prompts_for_classes_gpu_cache(
+        self, class_indices: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Same as _encode_prompts_for_classes_gpu, but:
+        - ensures CLIP is on GPU
+        - returns CPU tensor for caching
+
+        Used only during prompt cache building.
+        """
+        device = torch.device("cuda")
+        self.clip.to(device)
+
+        class_indices = class_indices.to(device).long()
+        feats = self._encode_prompts_for_classes_gpu(class_indices)  # (B,K,D) on GPU
+        return feats.cpu()
+
+    # ======================================================================
+    # Training forward: EM-style mixture objective over prompts
+    # ======================================================================
     def forward(self, images: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         device = images.device
-        labels = labels.to(device)
 
+        # Encode images on GPU
         with torch.no_grad():
             img_feat = self.clip.encode_image(images).float()
-            img_feat = F.normalize(img_feat, dim=-1)  # (B,D)
+            img_feat = F.normalize(img_feat, dim=-1)  # (B, D)
 
-        # Prompt features for ground-truth class (B,K,D)
-        prompt_feats = self._encode_prompts_for_classes(labels)
+        # Encode K prompts per label
+        prompt_feats = self._encode_prompts_for_classes_gpu(labels)  # (B, K, D)
 
-        # Similarities over K prompts: (B,K)
-        sims = torch.einsum("bd,bkd->bk", img_feat, prompt_feats)
+        # Similarity over prompts
+        sims = torch.einsum("bd,bkd->bk", img_feat, prompt_feats)   # (B, K)
 
-        # E-step: responsibilities gamma (detach)
+        # E-step: responsibilities
         gamma = F.softmax(sims / self.em_tau, dim=1).detach()
 
         # M-step: maximize gamma-weighted similarity
         loss = -(gamma * sims).sum(dim=1).mean()
-
         return loss
 
-    # -----------------------------------------------------------
-    # BUILD INFERENCE CACHE (chunked, with tqdm)
-    # -----------------------------------------------------------
+    # ======================================================================
+    # Build full (C, K, D) prompt cache using GPU, store on CPU + disk
+    # ======================================================================
     @torch.no_grad()
-    def _build_inference_prompt_cache(self, device: torch.device):
+    def _build_prompt_cache_cpu(self):
         """
-        Build (C, K, D) prompt cache for ALL classes in chunks
-        to avoid OOM. Used only in predict().
+        Build the full prompt cache:
+            prompt_feats[class_id, k, :] = embedding of k-th prompt for class_id
+
+        - Uses GPU in small chunks for speed
+        - Stores result on CPU
+        - Saves to disk for reuse
         """
-        print("[MixturePromptCLIP] Building inference prompt cache (chunked)...")
+        # 1. Try disk cache
+        if os.path.exists(self.prompt_cache_path):
+            print(f"[MixturePromptCLIP] Loading prompt cache from {self.prompt_cache_path}")
+            data = torch.load(self.prompt_cache_path, map_location="cpu")
+            self._prompt_cache_cpu = data["prompt_feats"]  # (C, K, D)
+            print("[MixturePromptCLIP] Prompt cache loaded from disk.")
+            return
 
-        all_classes = torch.arange(self.num_classes, device=device)
-        chunk_size = 256  # adjust if needed
-        chunks = torch.split(all_classes, chunk_size)
+        # 2. Build cache on GPU in chunks
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is required to build prompt cache with Option D.")
 
-        out_list = []
+        print("[MixturePromptCLIP] Building prompt cache on GPU (chunked)...")
 
-        pbar = tqdm(range(len(chunks)), desc="Encoding prompt chunks", ncols=80)
-        for i in pbar:
-            chunk = chunks[i]
-            feats = self._encode_prompts_for_classes(chunk)  # (chunk,K,D)
-            out_list.append(feats.cpu())
+        all_classes = torch.arange(self.num_classes, device=torch.device("cuda"))
+        chunk_size = 64  # safe; 64 classes * 32 prompts = 2048 prompts per chunk
+
+        feats_list = []
+
+        pbar = tqdm(
+            range(0, self.num_classes, chunk_size),
+            desc="GPU prompt chunks",
+            ncols=80,
+        )
+
+        for start in pbar:
+            end = min(start + chunk_size, self.num_classes)
+            chunk = all_classes[start:end]  # (chunk_size,)
+            f = self._encode_prompts_for_classes_gpu_cache(chunk)  # (chunk_size, K, D) on CPU
+            feats_list.append(f)
+
+            # free transient GPU memory from text-forward
             torch.cuda.empty_cache()
 
-        all_feats = torch.cat(out_list, dim=0)  # (C,K,D)
+        feats = torch.cat(feats_list, dim=0)  # (C, K, D)
+        self._prompt_cache_cpu = feats
 
-        self._inference_prompt_feats = all_feats.to(device)
-        self._inference_prompt_device = device
+        # 3. Save to disk
+        torch.save({"prompt_feats": feats}, self.prompt_cache_path)
+        print(f"[MixturePromptCLIP] Prompt cache saved to {self.prompt_cache_path}")
 
-        print("[MixturePromptCLIP] Inference prompt cache built successfully.")
-
-    # -----------------------------------------------------------
-    # PREDICT (inference over all classes)
-    # -----------------------------------------------------------
+    # ======================================================================
+    # Inference: use cached prompts for all classes
+    # ======================================================================
     @torch.no_grad()
     def predict(self, images: torch.Tensor) -> torch.Tensor:
         device = images.device
 
+        # Encode images
         img_feat = self.clip.encode_image(images).float()
-        img_feat = F.normalize(img_feat, dim=-1)  # (B,D)
+        img_feat = F.normalize(img_feat, dim=-1)  # (B, D)
+        B = img_feat.size(0)
 
-        # Build cache on first call
-        if (
-            self._inference_prompt_feats is None
-            or self._inference_prompt_device != device
-        ):
-            self._build_inference_prompt_cache(device)
+        # Ensure prompt cache is available
+        if self._prompt_cache_cpu is None:
+            self._build_prompt_cache_cpu()
 
-        prompt_feats = self._inference_prompt_feats.to(device)  # (C,K,D)
+        feats_cpu = self._prompt_cache_cpu  # (C, K, D) on CPU
+        C = feats_cpu.size(0)
 
-        # (B,C,K)
-        sims = torch.einsum("bd,ckd->bck", img_feat, prompt_feats)
+        # Chunk classes to keep GPU memory safe
+        chunk_size = 512
+        chunks = torch.split(torch.arange(C), chunk_size)
 
-        # Max over K prompts
-        scores, _ = sims.max(dim=2)  # (B,C)
+        all_scores = []
 
-        preds = scores.argmax(dim=1)
+        for chunk in chunks:
+            pf = feats_cpu[chunk].to(device)           # (chunk_size, K, D)
+            sims = torch.einsum("bd,ckd->bck", img_feat, pf)  # (B, chunk_size, K)
+            scores = sims.max(dim=2).values           # (B, chunk_size)
+            all_scores.append(scores.cpu())
+
+        all_scores = torch.cat(all_scores, dim=1)     # (B, C)
+        preds = all_scores.argmax(dim=1)
+
         return preds
