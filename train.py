@@ -13,16 +13,58 @@ from src.datasets.inat_dataset import get_inat2018, extract_hierarchical_metadat
 from src.models.mop_clip import MixturePromptCLIP
 
 
+# -------------------------------------------------------------------
+#                      CONFIG LOADING
+# -------------------------------------------------------------------
 def load_config(path):
     with open(path, "r") as f:
         return yaml.safe_load(f)
 
 
+# -------------------------------------------------------------------
+#                      CHECKPOINTING
+# -------------------------------------------------------------------
+def save_checkpoint(path, epoch, model, optimizer, scaler, best_val, step):
+    ckpt = {
+        "epoch": epoch,
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scaler": scaler.state_dict(),
+        "best_val_acc": best_val,
+        "step": step,
+    }
+    torch.save(ckpt, path)
+    print(f"[Checkpoint] Saved: {path}")
+
+
+def load_checkpoint(path, model, optimizer, scaler, device):
+    print(f"[Checkpoint] Loading from: {path}")
+    ckpt = torch.load(path, map_location=device)
+
+    model.load_state_dict(ckpt["model"])
+    optimizer.load_state_dict(ckpt["optimizer"])
+
+    if "scaler" in ckpt:
+        scaler.load_state_dict(ckpt["scaler"])
+    else:
+        print("[Checkpoint] WARNING: No scaler state in checkpoint!")
+
+    epoch = ckpt.get("epoch", 1)
+    step = ckpt.get("step", 0)
+    best_val = ckpt.get("best_val_acc", 0.0)
+
+    print(
+        f"[Checkpoint] Restored epoch={epoch}, step={step}, best_val={best_val:.4f}"
+    )
+
+    return epoch, step, best_val
+
+
+# -------------------------------------------------------------------
+#                      VALIDATION LOOP
+# -------------------------------------------------------------------
 @torch.no_grad()
 def validate(model, dataloader, device):
-    """
-    Fast validation using cached prompt features (Option C).
-    """
     model.eval()
 
     total = 0
@@ -37,25 +79,35 @@ def validate(model, dataloader, device):
         total += len(labels)
 
     duration = time.time() - start_time
-    print(f"[Validation] time = {duration:.2f}s")
+    print(f"[Validation] Time = {duration:.2f}s")
 
     return correct / total if total else 0.0
 
 
+# -------------------------------------------------------------------
+#                      LR SCHEDULER
+# -------------------------------------------------------------------
 def cosine_lr(optimizer, base_lr, step, max_steps, warmup_steps=1000):
     if step < warmup_steps:
-        lr = base_lr * step / warmup_steps
+        lr = base_lr * (step / warmup_steps)
     else:
         progress = (step - warmup_steps) / (max_steps - warmup_steps)
         lr = base_lr * 0.5 * (1 + math.cos(math.pi * progress))
+
     for g in optimizer.param_groups:
         g["lr"] = lr
 
 
+# -------------------------------------------------------------------
+#                      TRAINING LOOP
+# -------------------------------------------------------------------
 def train(config, resume=None):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("Using device:", device)
 
+    # ---------------------------------------------------------------
+    # Load dataset
+    # ---------------------------------------------------------------
     root = config["dataset"]["root"]
 
     print("\n=== Loading INaturalist 2018 dataset ===")
@@ -83,9 +135,12 @@ def train(config, resume=None):
         persistent_workers=True,
     )
 
+    # ---------------------------------------------------------------
+    # Load metadata + model
+    # ---------------------------------------------------------------
     metadata = extract_hierarchical_metadata(root)
     num_classes = len(metadata)
-    print(f"Num classes (species): {num_classes}")
+    print(f"Num classes: {num_classes}")
 
     model = MixturePromptCLIP(
         clip_model=config["model"]["clip_model"],
@@ -94,6 +149,7 @@ def train(config, resume=None):
         ctx_len=config["model"]["ctx_len"],
     ).to(device)
 
+    # Print run summary
     print("\n================= RUN CONFIG SUMMARY =================")
     print(f"Model: {config['model']['clip_model']}")
     print(f"Dataset Root: {root}")
@@ -102,37 +158,38 @@ def train(config, resume=None):
     print(f"Num Classes:   {num_classes}")
     print("=====================================================\n")
 
+    # ---------------------------------------------------------------
+    # Optimizer + AMP
+    # ---------------------------------------------------------------
     optimizer = torch.optim.Adam(model.parameters(), lr=float(config["train"]["lr"]))
     scaler = GradScaler("cuda" if device == "cuda" else "cpu")
 
-    # Load checkpoint if needed
     start_epoch = 1
     best_val = 0.0
     step = 0
     max_steps = len(train_loader) * config["train"]["epochs"]
 
+    # ---------------------------------------------------------------
+    # Resume training if checkpoint provided
+    # ---------------------------------------------------------------
     if resume and os.path.exists(resume):
-        ckpt = torch.load(resume, map_location=device)
-        model.load_state_dict(ckpt["model"])
-        optimizer.load_state_dict(ckpt["optimizer"])
-        start_epoch = ckpt["epoch"] + 1
-        best_val = ckpt["best_val_acc"]
-        step = ckpt.get("step", 0)
-        print(f"Resuming from epoch {start_epoch}")
+        start_epoch, step, best_val = load_checkpoint(
+            resume, model, optimizer, scaler, device
+        )
+        start_epoch += 1
 
-    os.makedirs("checkpoints", exist_ok=True)
-
-    # -----------------------------------------------------------------
-    # BUILD INFERENCE CACHE ONCE BEFORE TRAINING
-    # -----------------------------------------------------------------
-    print("\n=== Building inference prompt cache BEFORE training ===")
+    # ---------------------------------------------------------------
+    # Build inference cache before training (fast validation)
+    # ---------------------------------------------------------------
+    print("\n=== Building inference cache BEFORE training ===")
     model.eval()
     dummy = torch.randn(1, 3, 224, 224).to(device)
     model.predict(dummy)  # triggers cache build
+    print("=== Inference cache ready ===\n")
 
-    # -----------------------------------------------------------------
+    # ---------------------------------------------------------------
     # TRAINING LOOP
-    # -----------------------------------------------------------------
+    # ---------------------------------------------------------------
     for epoch in range(start_epoch, config["train"]["epochs"] + 1):
         model.train()
         running_loss = 0.0
@@ -142,7 +199,7 @@ def train(config, resume=None):
         for imgs, labels in pbar:
             imgs, labels = imgs.to(device), labels.to(device)
 
-            # LR schedule
+            # LR scheduling
             cosine_lr(
                 optimizer,
                 config["train"]["lr"],
@@ -166,29 +223,28 @@ def train(config, resume=None):
 
         print(f"Epoch {epoch}: Train Loss = {running_loss / len(train_loader):.4f}")
 
-        # -------------------------------------------------------------
-        # VALIDATE — fast because of prebuilt cache
-        # -------------------------------------------------------------
+        # -------------------
+        # VALIDATION
+        # -------------------
         acc = validate(model, val_loader, device)
         print(f"Epoch {epoch}: Val Acc = {acc:.4f}")
 
+        # -------------------
+        # SAVE CHECKPOINT
+        # -------------------
         if acc > best_val:
             best_val = acc
-            torch.save(
-                {
-                    "epoch": epoch,
-                    "model": model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "best_val_acc": best_val,
-                    "step": step,
-                },
-                f"checkpoints/best_epoch{epoch}.pt",
+            ckpt_path = f"checkpoints/best_epoch{epoch}.pt"
+            save_checkpoint(
+                ckpt_path, epoch, model, optimizer, scaler, best_val, step
             )
-            print("Saved new best checkpoint!")
 
     print("Training complete. Best Val Acc =", best_val)
 
 
+# -------------------------------------------------------------------
+#                      ENTRY POINT
+# -------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/default.yaml")
@@ -197,4 +253,5 @@ if __name__ == "__main__":
 
     config = load_config(args.config)
     config["train"]["lr"] = float(config["train"]["lr"])
+
     train(config, resume=args.resume)
