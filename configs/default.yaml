@@ -10,7 +10,7 @@ model:
   ctx_len: 8     # number of learnable context tokens per prompt (CoOp uses 16)
 
   # EM temperature
-  em_tau: 0.5    # lower tau = harder responsibilities, better specialization
+  em_tau: 5.0  
 
 train:
   batch_size: 16      # ViT-B/32 can handle this; improves stability
