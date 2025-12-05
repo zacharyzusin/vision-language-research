@@ -3,17 +3,20 @@ dataset:
   version: 2018
 
 model:
-  clip_model: ViT-B/32
+  # Much better for fine-grained than ViT-B/32
+  clip_model: ViT-B/16
 
-  # Shared prompt hyperparameters
-  K: 32          # number of mixture prompts (more is better with shared prompts)
-  ctx_len: 8     # number of learnable context tokens per prompt (CoOp uses 16)
+  # Number of sub-prompts per class
+  K: 32
 
-  # EM temperature
-  em_tau: 5.0  
+  # EM temperature schedule
+  # em_tau_start: initial temperature (softer assignments)
+  em_tau_start: 1.0
+  # em_tau_end: final temperature (sharper, more specialized)
+  em_tau_end: 0.3
 
 train:
-  batch_size: 16      # ViT-B/32 can handle this; improves stability
-  lr: 1e-3             # shared prompts learn faster; 1e-3 is optimal in CoOp/MaPLe
-  epochs: 30           # longer training improves generalization
-  warmup_steps: 2000   # stabilize early EM iterations
+  batch_size: 16       # adjust based on GPU memory
+  lr: 1e-3             # good starting point for prompt_offsets
+  epochs: 30
+  warmup_steps: 2000

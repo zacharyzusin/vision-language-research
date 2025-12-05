@@ -1,0 +1,80 @@
+_wandb:
+    value:
+        cli_version: 0.23.0
+        e:
+            ffrbk7uumcxdu6ussworhtn94yih3r3i:
+                args:
+                    - --config
+                    - configs/default.yaml
+                codePath: train.py
+                codePathLocal: train.py
+                cpu_count: 24
+                cpu_count_logical: 48
+                cudaVersion: "12.5"
+                disk:
+                    /:
+                        total: "67049664512"
+                        used: "11113037824"
+                email: zwz2000@columbia.edu
+                executable: /local/rcs/zwz2000/iNatCode/myenv/bin/python
+                git:
+                    commit: cac48ffd7ec32a0f550557d17f7356fc67fb539b
+                    remote: git@github.com:zacharyzusin/vision-language-research.git
+                gpu: NVIDIA TITAN RTX
+                gpu_count: 3
+                gpu_nvidia:
+                    - architecture: Turing
+                      cudaCores: 4608
+                      memoryTotal: "25769803776"
+                      name: NVIDIA TITAN RTX
+                      uuid: GPU-ffdc09b0-876f-f3cf-da73-c3bf96e78700
+                    - architecture: Turing
+                      cudaCores: 4608
+                      memoryTotal: "25769803776"
+                      name: NVIDIA TITAN RTX
+                      uuid: GPU-e39bfd28-7f5f-4a84-c468-ad9ac8fd083a
+                    - architecture: Turing
+                      cudaCores: 4608
+                      memoryTotal: "25769803776"
+                      name: NVIDIA TITAN RTX
+                      uuid: GPU-41b576a7-c904-036b-1720-71aa194127de
+                host: hulk
+                memory:
+                    total: "201369391104"
+                os: Linux-5.15.0-160-generic-x86_64-with-glibc2.35
+                program: /local/rcs/zwz2000/iNatCode/train.py
+                python: CPython 3.10.12
+                root: /local/rcs/zwz2000/iNatCode
+                startedAt: "2025-12-05T02:10:27.599471Z"
+                writerId: ffrbk7uumcxdu6ussworhtn94yih3r3i
+        m: []
+        python_version: 3.10.12
+        t:
+            "1":
+                - 1
+                - 41
+            "2":
+                - 1
+                - 41
+            "3":
+                - 16
+            "4": 3.10.12
+            "5": 0.23.0
+            "12": 0.23.0
+            "13": linux-x86_64
+dataset:
+    value:
+        root: data/iNat2018
+        version: 2018
+model:
+    value:
+        K: 32
+        clip_model: ViT-B/16
+        em_tau_end: 0.3
+        em_tau_start: 1
+train:
+    value:
+        batch_size: 16
+        epochs: 30
+        lr: 0.001
+        warmup_steps: 2000

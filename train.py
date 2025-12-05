@@ -9,6 +9,8 @@ from torch.utils.data import DataLoader
 from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 
+import wandb
+
 from src.datasets.inat_dataset import get_inat2018, extract_hierarchical_metadata
 from src.models.mop_clip import MixturePromptCLIP
 
@@ -29,23 +31,20 @@ def validate(model, dataloader, device):
         labels = labels.to(device, non_blocking=True)
 
         preds = model.predict(images)
-
-        # preds returned on SAME DEVICE as images
-        assert preds.device == labels.device, \
-            "BUG: preds and labels must live on same device!"
-
         correct += (preds == labels).sum().item()
         total += labels.size(0)
 
-    return correct / total if total > 0 else 0.0
+    return correct / max(1, total)
 
 
 def cosine_lr(optimizer, base_lr, step, max_steps, warmup_steps=1000):
+    """Cosine LR with linear warmup."""
     if step < warmup_steps:
-        lr = base_lr * step / warmup_steps
+        lr = base_lr * step / max(1, warmup_steps)
     else:
-        progress = (step - warmup_steps) / (max_steps - warmup_steps)
+        progress = (step - warmup_steps) / max(1, (max_steps - warmup_steps))
         lr = base_lr * 0.5 * (1 + math.cos(math.pi * progress))
+
     for g in optimizer.param_groups:
         g["lr"] = lr
 
@@ -56,6 +55,9 @@ def train(config, resume=None):
 
     root = config["dataset"]["root"]
 
+    # ----------------------------------
+    # Dataset
+    # ----------------------------------
     print("\n=== Loading INaturalist 2018 dataset ===")
     train_ds = get_inat2018(root, "train")
     val_ds   = get_inat2018(root, "val")
@@ -84,15 +86,28 @@ def train(config, resume=None):
     metadata = extract_hierarchical_metadata(root)
     print(f"Num classes: {len(metadata)}")
 
-    # MODEL INIT
+    # ----------------------------------
+    # W&B init (minimal)
+    # ----------------------------------
+    wandb.init(project="inat-mop-clip", config=config)
+
+    # ----------------------------------
+    # Model
+    # ----------------------------------
+    em_tau_start = float(
+        config["model"].get("em_tau_start", config["model"].get("em_tau", 1.0))
+    )
+    em_tau_end = float(config["model"].get("em_tau_end", 0.3))
+
     model = MixturePromptCLIP(
         clip_model=config["model"]["clip_model"],
         metadata=metadata,
         K=config["model"]["K"],
-        ctx_len=config["model"]["ctx_len"],
-        em_tau=config["model"]["em_tau"],
+        em_tau=em_tau_start,
     )
+
     model = model.to(device)
+    model.clip.to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=float(config["train"]["lr"]))
     scaler = GradScaler(device.type)
@@ -101,8 +116,11 @@ def train(config, resume=None):
     best_val = 0.0
     step = 0
     max_steps = len(train_loader) * config["train"]["epochs"]
+    tau_anneal_steps = max_steps
 
-    # RESUME CHECKPOINT
+    # ----------------------------------
+    # Optional checkpoint resume
+    # ----------------------------------
     if resume and os.path.exists(resume):
         ckpt = torch.load(resume, map_location=device)
         model.load_state_dict(ckpt["model"])
@@ -114,7 +132,9 @@ def train(config, resume=None):
 
     os.makedirs("checkpoints", exist_ok=True)
 
-    # TRAIN LOOP
+    # ----------------------------------
+    # Training Loop
+    # ----------------------------------
     for epoch in range(start_epoch, config["train"]["epochs"] + 1):
         model.train()
         running_loss = 0.0
@@ -125,8 +145,20 @@ def train(config, resume=None):
             images = images.to(device, non_blocking=True)
             labels = labels.to(device, non_blocking=True)
 
-            cosine_lr(optimizer, config["train"]["lr"], step, max_steps,
-                      warmup_steps=config["train"]["warmup_steps"])
+            # LR scheduler
+            cosine_lr(
+                optimizer,
+                config["train"]["lr"],
+                step,
+                max_steps,
+                warmup_steps=config["train"]["warmup_steps"],
+            )
+
+            # EM temperature annealing
+            progress = min(1.0, step / max(1, tau_anneal_steps))
+            current_tau = em_tau_end + (em_tau_start - em_tau_end) * (1.0 - progress)
+            model.em_tau = float(current_tau)
+
             step += 1
 
             optimizer.zero_grad(set_to_none=True)
@@ -139,14 +171,28 @@ def train(config, resume=None):
             scaler.update()
 
             running_loss += loss.item()
-            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
+            # WandB logging
+            wandb.log({
+                "loss": loss.item(),
+                "tau": current_tau,
+                "lr": optimizer.param_groups[0]["lr"],
+                "step": step,
+            })
+
+            pbar.set_postfix({"loss": f"{loss.item():.4f}", "tau": f"{current_tau:.3f}"})
+
+        # Epoch summary
         avg_loss = running_loss / len(train_loader)
         print(f"Epoch {epoch}: Train Loss = {avg_loss:.4f}")
+        wandb.log({"train_loss_epoch": avg_loss})
 
+        # Validation
         val_acc = validate(model, val_loader, device)
-        print(f"Epoch {epoch}: Val Acc = {val_acc:.4f}")
+        print(f"Epoch {epoch}: Val Acc = {val_acc:.4f} | Best = {best_val:.4f}")
+        wandb.log({"val_acc": val_acc})
 
+        # Best checkpoint
         if val_acc > best_val:
             best_val = val_acc
             ckpt_path = f"checkpoints/best_epoch{epoch}.pt"

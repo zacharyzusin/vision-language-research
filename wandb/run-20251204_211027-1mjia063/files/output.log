@@ -1,0 +1,99 @@
+Loading CLIP model: ViT-B/16
+Building hierarchical prompts with 5 templates per class...
+Encoding hierarchical text prompts with CLIP text encoder...
+Encoding text prompts: 100%|██████████████████| 160/160 [00:26<00:00,  6.15it/s]
+Initialized base text features: torch.Size([8142, 512])
+Initialized per-class prompt offsets: torch.Size([8142, 32, 512])
+Epoch 1: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 27345/27345 [22:44<00:00, 20.04it/s, loss=-0.8540, tau=0.977]
+Epoch 1: Train Loss = -0.7924
+Epoch 2: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 27345/27345 [28:12<00:00, 16.15it/s, loss=-0.8538, tau=0.953]
+Epoch 1: Val Acc = 0.1374 | Best = 0.0000
+Saved new best checkpoint to checkpoints/best_epoch1.pt
+Epoch 2: Train Loss = -0.8850
+Epoch 3:   3%|████▌                                                                                                                                           | 872/27345 [00:37<18:45, 23.53it/s, loss=-0.8875, tau=0.953]
+Epoch 2: Val Acc = 0.2480 | Best = 0.1374
+Saved new best checkpoint to checkpoints/best_epoch2.pt
+Traceback (most recent call last):
+  File "/local/rcs/zwz2000/iNatCode/train.py", line 219, in <module>
+    train(config, resume=args.resume)
+  File "/local/rcs/zwz2000/iNatCode/train.py", line 167, in train
+    loss = model(images, labels)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/src/models/mop_clip.py", line 180, in forward
+    img_feat = self.clip.encode_image(images).float()
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/clip/model.py", line 341, in encode_image
+    return self.visual(image.type(self.dtype))
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/clip/model.py", line 232, in forward
+    x = self.transformer(x)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/clip/model.py", line 203, in forward
+    return self.resblocks(x)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/container.py", line 250, in forward
+    input = module(input)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/clip/model.py", line 190, in forward
+    x = x + self.attention(self.ln_1(x))
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/clip/model.py", line 187, in attention
+    return self.attn(x, x, x, need_weights=False, attn_mask=self.attn_mask)[0]
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1732, in _wrapped_call_impl
+    def _wrapped_call_impl(self, *args, **kwargs):
+KeyboardInterrupt
+Traceback (most recent call last):
+  File "/local/rcs/zwz2000/iNatCode/train.py", line 219, in <module>
+    train(config, resume=args.resume)
+  File "/local/rcs/zwz2000/iNatCode/train.py", line 167, in train
+    loss = model(images, labels)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/src/models/mop_clip.py", line 180, in forward
+    img_feat = self.clip.encode_image(images).float()
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/clip/model.py", line 341, in encode_image
+    return self.visual(image.type(self.dtype))
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/clip/model.py", line 232, in forward
+    x = self.transformer(x)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/clip/model.py", line 203, in forward
+    return self.resblocks(x)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/container.py", line 250, in forward
+    input = module(input)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/clip/model.py", line 190, in forward
+    x = x + self.attention(self.ln_1(x))
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/clip/model.py", line 187, in attention
+    return self.attn(x, x, x, need_weights=False, attn_mask=self.attn_mask)[0]
+  File "/local/rcs/zwz2000/iNatCode/myenv/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1732, in _wrapped_call_impl
+    def _wrapped_call_impl(self, *args, **kwargs):
+KeyboardInterrupt
