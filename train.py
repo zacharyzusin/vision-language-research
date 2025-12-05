@@ -201,14 +201,35 @@ def train(config, resume=None):
         # Validation
         # =====================
         val_acc = validate(model, val_loader, device)
-        wandb.log({"val_acc": val_acc})
+
+        is_best = val_acc > best_val
+        if is_best:
+            best_val = val_acc
 
         print(f"Epoch {epoch}: Val Acc = {val_acc:.4f} (best={best_val:.4f})")
+        wandb.log({"val_acc": val_acc, "best_val_acc": best_val})
 
         # =====================
         # Save Checkpoint
         # =====================
-        if val_acc > best_val:
+        if is_best:
+            ckpt_path = f"checkpoints/best_epoch{epoch}.pt"
+            torch.save({
+                "epoch": epoch,
+                "step": step,
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "best_val_acc": best_val,
+                "tau": current_tau,
+            }, ckpt_path)
+
+            print(f"Saved new BEST checkpoint: {ckpt_path}")
+
+
+        # =====================
+        # Save Checkpoint
+        # =====================
+        if is_best:
             best_val = val_acc
             ckpt_path = f"checkpoints/best_epoch{epoch}.pt"
 

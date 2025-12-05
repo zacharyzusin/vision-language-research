@@ -16,3 +16,4 @@ env/
 venv/
 
 wandb/
+subprompt_results/
