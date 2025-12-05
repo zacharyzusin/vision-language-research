@@ -27,8 +27,8 @@ def validate(model, dataloader, device):
     correct = 0
 
     for images, labels in tqdm(dataloader, desc="Validating", leave=False):
-        images = images.to(device, non_blocking=True)
-        labels = labels.to(device, non_blocking=True)
+        images = images.to(device)
+        labels = labels.to(device)
 
         preds = model.predict(images)
         correct += (preds == labels).sum().item()
@@ -42,7 +42,7 @@ def cosine_lr(optimizer, base_lr, step, max_steps, warmup_steps=1000):
     if step < warmup_steps:
         lr = base_lr * step / max(1, warmup_steps)
     else:
-        progress = (step - warmup_steps) / max(1, (max_steps - warmup_steps))
+        progress = (step - warmup_steps) / max(1, max_steps - warmup_steps)
         lr = base_lr * 0.5 * (1 + math.cos(math.pi * progress))
 
     for g in optimizer.param_groups:
@@ -53,17 +53,13 @@ def train(config, resume=None):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
+    # =====================
+    # Dataset
+    # =====================
     root = config["dataset"]["root"]
 
-    # ----------------------------------
-    # Dataset
-    # ----------------------------------
-    print("\n=== Loading INaturalist 2018 dataset ===")
     train_ds = get_inat2018(root, "train")
     val_ds   = get_inat2018(root, "val")
-
-    print(f"Train samples: {len(train_ds)}")
-    print(f"Val samples:   {len(val_ds)}")
 
     train_loader = DataLoader(
         train_ds,
@@ -84,20 +80,17 @@ def train(config, resume=None):
     )
 
     metadata = extract_hierarchical_metadata(root)
-    print(f"Num classes: {len(metadata)}")
 
-    # ----------------------------------
-    # W&B init (minimal)
-    # ----------------------------------
+    # =====================
+    # W&B
+    # =====================
     wandb.init(project="inat-mop-clip", config=config)
 
-    # ----------------------------------
-    # Model
-    # ----------------------------------
-    em_tau_start = float(
-        config["model"].get("em_tau_start", config["model"].get("em_tau", 1.0))
-    )
-    em_tau_end = float(config["model"].get("em_tau_end", 0.3))
+    # =====================
+    # Model Setup
+    # =====================
+    em_tau_start = float(config["model"].get("em_tau_start", 1.0))
+    em_tau_end   = float(config["model"].get("em_tau_end", 0.3))
 
     model = MixturePromptCLIP(
         clip_model=config["model"]["clip_model"],
@@ -105,47 +98,64 @@ def train(config, resume=None):
         K=config["model"]["K"],
         em_tau=em_tau_start,
     )
-
     model = model.to(device)
     model.clip.to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=float(config["train"]["lr"]))
+    optimizer = torch.optim.Adam(model.parameters(), lr=config["train"]["lr"])
     scaler = GradScaler(device.type)
 
+    # =====================
+    # Resume Variables
+    # =====================
     start_epoch = 1
-    best_val = 0.0
     step = 0
-    max_steps = len(train_loader) * config["train"]["epochs"]
+    best_val = 0.0
+    current_tau = em_tau_start
+
+    total_epochs = config["train"]["epochs"]
+    max_steps = len(train_loader) * total_epochs
     tau_anneal_steps = max_steps
 
-    # ----------------------------------
-    # Optional checkpoint resume
-    # ----------------------------------
+    # =====================
+    # LOAD CHECKPOINT
+    # =====================
     if resume and os.path.exists(resume):
+        print(f"Resuming from checkpoint: {resume}")
         ckpt = torch.load(resume, map_location=device)
+
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
+
         start_epoch = ckpt["epoch"] + 1
-        best_val = ckpt["best_val_acc"]
         step = ckpt["step"]
-        print(f"Resumed training from epoch {start_epoch}")
+        best_val = ckpt["best_val_acc"]
+
+        # Restore τ precisely
+        current_tau = ckpt.get("tau", current_tau)
+        model.em_tau = current_tau
+
+        print(f"→ Resumed epoch {start_epoch}")
+        print(f"→ Resumed global step {step}")
+        print(f"→ Restored τ = {current_tau}")
 
     os.makedirs("checkpoints", exist_ok=True)
 
-    # ----------------------------------
-    # Training Loop
-    # ----------------------------------
-    for epoch in range(start_epoch, config["train"]["epochs"] + 1):
+    # =====================
+    # TRAIN LOOP
+    # =====================
+    for epoch in range(start_epoch, total_epochs + 1):
         model.train()
         running_loss = 0.0
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
 
         for images, labels in pbar:
-            images = images.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True)
+            images = images.to(device)
+            labels = labels.to(device)
 
-            # LR scheduler
+            # -----------------------
+            # LR Scheduling
+            # -----------------------
             cosine_lr(
                 optimizer,
                 config["train"]["lr"],
@@ -154,8 +164,10 @@ def train(config, resume=None):
                 warmup_steps=config["train"]["warmup_steps"],
             )
 
-            # EM temperature annealing
-            progress = min(1.0, step / max(1, tau_anneal_steps))
+            # -----------------------
+            # τ-Annealing (RESUMABLE)
+            # -----------------------
+            progress = min(1.0, step / tau_anneal_steps)
             current_tau = em_tau_end + (em_tau_start - em_tau_end) * (1.0 - progress)
             model.em_tau = float(current_tau)
 
@@ -163,6 +175,9 @@ def train(config, resume=None):
 
             optimizer.zero_grad(set_to_none=True)
 
+            # -----------------------
+            # Loss
+            # -----------------------
             with autocast(device_type=device.type):
                 loss = model(images, labels)
 
@@ -172,41 +187,43 @@ def train(config, resume=None):
 
             running_loss += loss.item()
 
-            # WandB logging
             wandb.log({
                 "loss": loss.item(),
                 "tau": current_tau,
                 "lr": optimizer.param_groups[0]["lr"],
                 "step": step,
+                "epoch": epoch,
             })
 
             pbar.set_postfix({"loss": f"{loss.item():.4f}", "tau": f"{current_tau:.3f}"})
 
-        # Epoch summary
-        avg_loss = running_loss / len(train_loader)
-        print(f"Epoch {epoch}: Train Loss = {avg_loss:.4f}")
-        wandb.log({"train_loss_epoch": avg_loss})
-
+        # =====================
         # Validation
+        # =====================
         val_acc = validate(model, val_loader, device)
-        print(f"Epoch {epoch}: Val Acc = {val_acc:.4f} | Best = {best_val:.4f}")
         wandb.log({"val_acc": val_acc})
 
-        # Best checkpoint
+        print(f"Epoch {epoch}: Val Acc = {val_acc:.4f} (best={best_val:.4f})")
+
+        # =====================
+        # Save Checkpoint
+        # =====================
         if val_acc > best_val:
             best_val = val_acc
             ckpt_path = f"checkpoints/best_epoch{epoch}.pt"
+
             torch.save({
                 "epoch": epoch,
+                "step": step,
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "best_val_acc": best_val,
-                "step": step,
+                "tau": current_tau,
             }, ckpt_path)
-            print(f"Saved new best checkpoint to {ckpt_path}")
 
-    print("\nTraining complete. Best Val Acc =", best_val)
+            print(f"Saved new BEST checkpoint: {ckpt_path}")
 
+    print("\nTraining Complete! Best Val Acc:", best_val)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
