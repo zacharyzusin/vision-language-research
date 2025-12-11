@@ -38,6 +38,10 @@ class MixturePromptCLIP(nn.Module):
         self.K = int(K)
         self.em_tau = float(em_tau)
 
+        # Validate metadata ordering matches expected class count
+        assert len(metadata) == self.num_classes, \
+            f"Metadata length ({len(metadata)}) must match num_classes ({self.num_classes})"
+
         # -------------------------------------------------------------
         # Load CLIP model (initially on CPU)
         # -------------------------------------------------------------
@@ -119,6 +123,12 @@ class MixturePromptCLIP(nn.Module):
         # -------------------------------------------------------------
         self.prompt_offsets = nn.Parameter(torch.randn(C, self.K, self.D) * 0.01)
         print(f"Initialized per-class prompt offsets: {self.prompt_offsets.shape}")
+        
+        # Regularization strength for prompt offsets
+        self.offset_reg_weight = 0.001
+        
+        # CLIP-style similarity scaling factor
+        self.sim_scale = 50.0
 
     # ==========================================================
     # Force base_text_features to remain on CPU when model.to() is called
@@ -166,13 +176,16 @@ class MixturePromptCLIP(nn.Module):
     # ==========================================================
     # Training forward
     # ==========================================================
-    def forward(self, images, labels):
+    def forward(self, images, labels, lambda_mixture=0.5, temp_cls=0.07):
         """
         images: (B, 3, H, W) on device
         labels: (B,) class indices (0..C-1) on device
+        lambda_mixture: weight for mixture loss vs classification loss
+        temp_cls: temperature for classification logits
 
-        Loss: -E_{k~gamma}[sim(img, prompt_{y,k})]
-        where gamma is softmax over K sub-prompts for the correct class.
+        Returns:
+            loss: combined classification + mixture loss
+            dict with loss components for logging
         """
         device = images.device
 
@@ -180,16 +193,48 @@ class MixturePromptCLIP(nn.Module):
             img_feat = self.clip.encode_image(images).float()
             img_feat = F.normalize(img_feat, dim=-1)
 
+        # ==========================================================
+        # Mixture loss (original): intra-class specialization
+        # ==========================================================
         prompt_feats = self._batch_prompt_features(labels, device)  # (B, K, D)
-        sims = torch.einsum("bd,bkd->bk", img_feat, prompt_feats)   # (B, K)
-        sims = sims.clamp(min=-50, max=50)
+        sims_mixture = torch.einsum("bd,bkd->bk", img_feat, prompt_feats)  # (B, K)
+        sims_mixture = sims_mixture * self.sim_scale  # CLIP-style scaling
 
         # Soft responsibilities (E-step surrogate)
-        gamma = F.softmax(sims / self.em_tau, dim=1).detach()
+        gamma = F.softmax(sims_mixture / self.em_tau, dim=1).detach()
 
         # Expected negative similarity under gamma
-        loss = -(gamma * sims).sum(dim=1).mean()
-        return loss
+        loss_mixture = -(gamma * sims_mixture).sum(dim=1).mean()
+
+        # ==========================================================
+        # Classification loss: inter-class separation
+        # ==========================================================
+        all_prompts = self._all_prompt_features(device)  # (C, K, D)
+        sims_all = torch.einsum("bd,ckd->bck", img_feat, all_prompts)  # (B, C, K)
+        sims_all = sims_all * self.sim_scale  # CLIP-style scaling
+
+        # Max pooling over sub-prompts: score(c) = max_k sim(img, p[c,k])
+        class_logits = sims_all.max(dim=2).values  # (B, C)
+
+        # Cross-entropy with temperature scaling
+        loss_cls = F.cross_entropy(class_logits / temp_cls, labels)
+
+        # ==========================================================
+        # Regularization: prevent offsets from drifting too far
+        # ==========================================================
+        reg_loss = self.offset_reg_weight * (self.prompt_offsets ** 2).mean()
+
+        # ==========================================================
+        # Combined loss
+        # ==========================================================
+        loss = lambda_mixture * loss_mixture + (1.0 - lambda_mixture) * loss_cls + reg_loss
+
+        return loss, {
+            "loss_mixture": loss_mixture.item(),
+            "loss_cls": loss_cls.item(),
+            "loss_reg": reg_loss.item(),
+            "loss_total": loss.item(),
+        }
 
     # ==========================================================
     # Prediction over all classes (chunked)
@@ -211,13 +256,13 @@ class MixturePromptCLIP(nn.Module):
         C = all_prompts.size(0)
 
         chunk_size = 512
-        cpu_accum = []
+        scores_accum = []
 
         for chunk in torch.split(torch.arange(C, device=device), chunk_size):
             pf = all_prompts[chunk]                     # (chunk, K, D)
             sims = torch.einsum("bd,ckd->bck", img_feat, pf)  # (B, chunk, K)
             scores = sims.max(dim=2).values             # (B, chunk)
-            cpu_accum.append(scores.cpu())
+            scores_accum.append(scores)
 
-        final_scores = torch.cat(cpu_accum, dim=1).to(device)  # (B, C)
+        final_scores = torch.cat(scores_accum, dim=1)  # (B, C) - keep on device
         return final_scores.argmax(dim=1)

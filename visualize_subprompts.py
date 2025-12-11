@@ -1,113 +1,116 @@
-# visualize_subprompts.py
-
 import os
-import argparse
 import torch
-import torchvision.transforms.functional as TF
-from torchvision.utils import make_grid, save_image
-from torch.utils.data import DataLoader
+import torch.nn.functional as F
+from torchvision.transforms.functional import to_pil_image
+from torchvision.utils import draw_bounding_boxes
 from tqdm import tqdm
+from PIL import Image, ImageDraw, ImageFont
 
-from src.datasets.inat_dataset import get_inat2018, extract_hierarchical_metadata
-from src.models.mop_clip import MixturePromptCLIP
+CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
+CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 
+def unnormalize_clip(tensor):
+    mean = torch.tensor(CLIP_MEAN).view(-1, 1, 1)
+    std = torch.tensor(CLIP_STD).view(-1, 1, 1)
+    return (tensor * std) + mean
+
+def get_class_index(metadata, species_name):
+    species_name = species_name.lower()
+    for i, meta in enumerate(metadata):
+        if meta["species"] == species_name:
+            return i
+    raise ValueError(f"Species '{species_name}' not found.")
 
 @torch.no_grad()
-def collect_assignments(model, dataloader, target_class, device, max_per_k=16):
-    """
-    For a given class c, compute gamma assignments for all its images.
-    Return the top-N images for each sub-prompt k.
-    """
+def extract_topn_per_prompt(model, dataloader, class_index, device, top_n=8):
     model.eval()
+    K = model.K
+    subprompt_scores = [[] for _ in range(K)]
+    subprompt_images = [[] for _ in range(K)]
 
-    buckets = {k: [] for k in range(model.K)}
-
-    for images, labels in tqdm(dataloader, desc="Collecting γ"):
+    for images, labels in tqdm(dataloader, desc="Gathering γ"):
         images = images.to(device)
-        labels = labels.to(device)
 
-        mask = (labels == target_class)
-        if mask.sum() == 0:
-            continue
+        img_feat = model.clip.encode_image(images).float()
+        img_feat = F.normalize(img_feat, dim=-1)
 
-        imgs = images[mask]
-        lbls = labels[mask]
+        labels_c = torch.full((images.size(0),), class_index, dtype=torch.long, device=device)
+        prompt_feats = model._batch_prompt_features(labels_c, device)
 
-        # Forward: get sims and gamma
-        with torch.no_grad():
-            img_feat = model.clip.encode_image(imgs).float()
-            img_feat = torch.nn.functional.normalize(img_feat, dim=-1)
+        sims = torch.einsum("bd,bkd->bk", img_feat, prompt_feats) * model.sim_scale
+        gamma = F.softmax(sims / model.em_tau, dim=1)
 
-            prompt_feats = model._batch_prompt_features(lbls, device)
-            sims = torch.einsum("bd,bkd->bk", img_feat, prompt_feats)
-            gamma = torch.softmax(sims / model.em_tau, dim=1)
+        for i in range(images.size(0)):
+            for k in range(K):
+                score = gamma[i, k].item()
+                img = images[i].cpu()
+                subprompt_scores[k].append(score)
+                subprompt_images[k].append(img)
 
-        for i in range(imgs.size(0)):
-            for k in range(model.K):
-                buckets[k].append((gamma[i, k].item(), imgs[i].cpu()))
+    topn = []
+    for k in range(K):
+        pairs = list(zip(subprompt_scores[k], subprompt_images[k]))
+        pairs.sort(reverse=True, key=lambda x: x[0])
+        topn.append(pairs[:top_n])
+    return topn
 
-    # Sort each bucket by gamma highest
-    for k in buckets:
-        buckets[k] = sorted(buckets[k], key=lambda x: -x[0])
-        buckets[k] = [img for _, img in buckets[k][:max_per_k]]
+def draw_gamma_grid(topn_data, species_name, output_dir="viz_outputs", image_size=224, nrow=8):
+    os.makedirs(output_dir, exist_ok=True)
+    font = ImageFont.load_default()
+    padding = 2
+    rows = []
 
-    return buckets
+    for k, row_data in enumerate(topn_data):
+        row_images = []
+        for gamma, img_tensor in row_data:
+            img = unnormalize_clip(img_tensor).clamp(0, 1)
+            img = to_pil_image(img)
+            draw = ImageDraw.Draw(img)
+            label = f"γ={gamma:.2f}"
+            draw.rectangle([0, 0, 60, 12], fill="black")
+            draw.text((2, 0), label, font=font, fill="white")
+            row_images.append(img)
+        if len(row_images) < nrow:
+            blanks = [Image.new("RGB", (image_size, image_size), (255, 255, 255))] * (nrow - len(row_images))
+            row_images.extend(blanks)
+        row_concat = Image.new("RGB", (nrow * image_size, image_size))
+        for i, img in enumerate(row_images):
+            row_concat.paste(img, (i * image_size, 0))
+        draw = ImageDraw.Draw(row_concat)
+        draw.text((5, 5), f"Prompt {k}", font=font, fill="yellow")
+        rows.append(row_concat)
 
+    full_height = len(rows) * image_size
+    full_image = Image.new("RGB", (nrow * image_size, full_height), (255, 255, 255))
+    for i, row in enumerate(rows):
+        full_image.paste(row, (0, i * image_size))
 
-def save_grids(buckets, out_dir="subprompt_vis", prefix="class"):
-    os.makedirs(out_dir, exist_ok=True)
+    save_path = os.path.join(output_dir, f"{species_name.replace(' ', '_')}_subprompt_grid_gamma.png")
+    full_image.save(save_path)
+    print(f"Saved grid with γ labels to {save_path}")
 
-    for k, imgs in buckets.items():
-        if len(imgs) == 0:
-            continue
-        grid = make_grid(imgs, nrow=4, normalize=True, padding=2)
-        path = os.path.join(out_dir, f"{prefix}_k{k}.png")
-        save_image(grid, path)
-        print("Saved:", path)
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--data_root", default="data/iNat2018")
-    parser.add_argument("--class_id", type=int, required=True)
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--max_per_k", type=int, default=16)
-    parser.add_argument("--out_dir", default="subprompt_results")
-    args = parser.parse_args()
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    val_ds = get_inat2018(args.data_root, "val")
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=4,
-    )
-
-    metadata = extract_hierarchical_metadata(args.data_root)
-
-    print("Loading model...")
-    ckpt = torch.load(args.checkpoint, map_location=device)
-
-    model = MixturePromptCLIP(
-        clip_model=ckpt.get("clip_model", "ViT-B/16"),
-        metadata=metadata,
-        K=32,
-        em_tau=0.3,
-    )
-    model.load_state_dict(ckpt["model"])
-    model = model.to(device)
-    model.clip.to(device)
-
-    print("Collecting assignments for class:", args.class_id)
-    buckets = collect_assignments(
-        model, val_loader, args.class_id, device, max_per_k=args.max_per_k
-    )
-
-    save_grids(buckets, args.out_dir, prefix=f"class_{args.class_id}")
-
-
+# === Main Entry ===
 if __name__ == "__main__":
-    main()
+    from src.datasets.inat_dataset import get_inat2018, extract_hierarchical_metadata
+    from src.models.mop_clip import MixturePromptCLIP
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    root = "data/iNat2018"
+    model_path = "checkpoints/best_epoch15.pt"
+    species = "danaus plexippus"  # change as needed
+    top_n = 8
+    batch_size = 16
+
+    metadata = extract_hierarchical_metadata(root)
+    class_index = get_class_index(metadata, species)
+
+    dataset = get_inat2018(root, split="train", only_class_id=class_index)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+
+    model = MixturePromptCLIP(clip_model="ViT-B/16", metadata=metadata, K=32)
+    ckpt = torch.load(model_path, map_location=device)
+    model.load_state_dict(ckpt["model"])
+    model.to(device)
+
+    topn = extract_topn_per_prompt(model, dataloader, class_index, device, top_n=top_n)
+    draw_gamma_grid(topn, species_name=species)

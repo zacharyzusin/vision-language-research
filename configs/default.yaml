@@ -13,10 +13,13 @@ model:
   # em_tau_start: initial temperature (softer assignments)
   em_tau_start: 1.0
   # em_tau_end: final temperature (sharper, more specialized)
-  em_tau_end: 0.3
+  # Lowered from 0.3 to 0.05 for better specialization
+  em_tau_end: 0.05
 
 train:
   batch_size: 16       # adjust based on GPU memory
-  lr: 1e-3             # good starting point for prompt_offsets
+  lr: 5e-4             # lowered from 1e-3 (more stable for prompt tuning)
   epochs: 30
   warmup_steps: 2000
+  lambda_mixture: 0.5  # weight for mixture loss vs classification loss
+  temp_cls: 0.07       # temperature for classification logits

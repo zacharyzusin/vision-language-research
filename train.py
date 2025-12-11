@@ -179,7 +179,18 @@ def train(config, resume=None):
             # Loss
             # -----------------------
             with autocast(device_type=device.type):
-                loss = model(images, labels)
+                result = model(
+                    images, 
+                    labels,
+                    lambda_mixture=config["train"].get("lambda_mixture", 0.5),
+                    temp_cls=config["train"].get("temp_cls", 0.07),
+                )
+                
+                if isinstance(result, tuple):
+                    loss, loss_dict = result
+                else:
+                    loss = result
+                    loss_dict = {}
 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -187,15 +198,22 @@ def train(config, resume=None):
 
             running_loss += loss.item()
 
-            wandb.log({
+            log_dict = {
                 "loss": loss.item(),
                 "tau": current_tau,
                 "lr": optimizer.param_groups[0]["lr"],
                 "step": step,
                 "epoch": epoch,
-            })
+            }
+            log_dict.update(loss_dict)
+            wandb.log(log_dict)
 
-            pbar.set_postfix({"loss": f"{loss.item():.4f}", "tau": f"{current_tau:.3f}"})
+            pbar.set_postfix({
+                "loss": f"{loss.item():.4f}",
+                "tau": f"{current_tau:.3f}",
+                "mix": f"{loss_dict.get('loss_mixture', 0):.3f}",
+                "cls": f"{loss_dict.get('loss_cls', 0):.3f}",
+            })
 
         # =====================
         # Validation
@@ -214,25 +232,6 @@ def train(config, resume=None):
         # =====================
         if is_best:
             ckpt_path = f"checkpoints/best_epoch{epoch}.pt"
-            torch.save({
-                "epoch": epoch,
-                "step": step,
-                "model": model.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "best_val_acc": best_val,
-                "tau": current_tau,
-            }, ckpt_path)
-
-            print(f"Saved new BEST checkpoint: {ckpt_path}")
-
-
-        # =====================
-        # Save Checkpoint
-        # =====================
-        if is_best:
-            best_val = val_acc
-            ckpt_path = f"checkpoints/best_epoch{epoch}.pt"
-
             torch.save({
                 "epoch": epoch,
                 "step": step,

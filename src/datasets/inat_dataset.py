@@ -104,23 +104,22 @@ class INat2018Split(Dataset):
         return img, label
 
 
-def get_inat2018(root: str, split: Literal["train", "val"]):
+def get_inat2018(root: str, split: Literal["train", "val"], only_class_id: int = None):
     """
     Returns a Dataset corresponding to the official 2018 train or val split.
 
-    Output samples are (image_tensor, label_int), where labels are species IDs in
-    [0, num_classes).
+    If only_class_id is set, restricts to only that class ID (int in [0, num_classes)).
+
+    Output samples are (image_tensor, label_int), where labels are species IDs in [0, num_classes).
     """
     transform = _make_transform()
 
-    # This loads ALL 2018 images from:
-    #   root/2018/<supercategory>/<species_id>/*.jpg
     base_ds = INaturalist(
         root=root,
         version="2018",
-        target_type="full",  # we will extract category_id ourselves
+        target_type="full",
         transform=transform,
-        download=False,      # you already have the data
+        download=False,
     )
 
     train_rel, val_rel = _load_split_paths(root)
@@ -128,15 +127,16 @@ def get_inat2018(root: str, split: Literal["train", "val"]):
 
     indices = []
     for idx, (cat_id, fname) in enumerate(base_ds.index):
-        # base_ds.all_categories[cat_id] like "Aves/2761"
-        rel = os.path.join(base_ds.all_categories[cat_id], fname)  # "Aves/2761/xxx.jpg"
-        if rel in target_set:
-            indices.append(idx)
+        rel = os.path.join(base_ds.all_categories[cat_id], fname)
+        if rel not in target_set:
+            continue
 
-    subset = INat2018Split(base_ds, indices)
+        if only_class_id is not None and cat_id != only_class_id:
+            continue  # skip samples not matching the desired class
 
-    return subset
+        indices.append(idx)
 
+    return INat2018Split(base_ds, indices)
 
 def extract_hierarchical_metadata(root: str):
     """
