@@ -1,4 +1,9 @@
-# src/datasets/inat_dataset.py
+"""
+iNaturalist 2018 Dataset Loading and Preprocessing.
+
+This module provides utilities for loading the iNaturalist 2018 dataset
+with proper train/val splits and hierarchical metadata extraction.
+"""
 
 import os
 import json
@@ -7,7 +12,6 @@ from typing import Literal
 import torch
 from torch.utils.data import Dataset
 import torchvision.transforms as T
-from torchvision.transforms import functional as TF
 from torchvision.transforms import InterpolationMode
 from torchvision.datasets import INaturalist
 
@@ -138,10 +142,22 @@ def get_inat2018(root: str, split: Literal["train", "val"], only_class_id: int =
 
     return INat2018Split(base_ds, indices)
 
-def extract_hierarchical_metadata(root: str):
+def extract_hierarchical_metadata(root: str) -> list:
     """
-    Read categories.json (unobfuscated taxonomy) and return list of
-    dicts with species/genus/family/order/scientific_name per class id.
+    Extract hierarchical metadata from iNaturalist 2018 categories.json.
+
+    Args:
+        root: Root directory containing categories.json
+
+    Returns:
+        List of dictionaries, each containing:
+            - species: Species name (lowercase)
+            - genus: Genus name (lowercase)
+            - family: Family name (lowercase)
+            - order: Order name (lowercase)
+            - scientific_name: Scientific name (lowercase)
+        
+        The list is sorted by category ID to ensure consistent ordering.
     """
 
     cat_path = os.path.join(root, "categories.json")

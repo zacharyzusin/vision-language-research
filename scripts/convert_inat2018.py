@@ -1,3 +1,10 @@
+"""
+Convert iNaturalist 2018 dataset to torchvision-compatible format.
+
+This script reorganizes the iNaturalist 2018 dataset directory structure
+to be compatible with torchvision.datasets.INaturalist.
+"""
+
 import os
 import json
 import shutil
@@ -35,20 +42,28 @@ cat_by_id = {c["id"]: c for c in categories}
 # Map species ID → class name
 species_to_class = {c["id"]: c["class"] for c in categories}
 
-# ----------------------------------------------------------------------
-# Linking utility
-# ----------------------------------------------------------------------
-def link_or_copy(src, dst):
+def link_or_copy(src: str, dst: str):
+    """
+    Create symbolic link, falling back to copy if symlink fails.
+
+    Args:
+        src: Source file path
+        dst: Destination file path
+    """
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     try:
         os.symlink(os.path.abspath(src), dst)
     except OSError:
         shutil.copy(src, dst)
 
-# ----------------------------------------------------------------------
-# Convert split
-# ----------------------------------------------------------------------
-def convert_split(split_data):
+
+def convert_split(split_data: dict):
+    """
+    Convert a dataset split (train or val) to torchvision format.
+
+    Args:
+        split_data: Dictionary containing 'images' and 'annotations' keys
+    """
     print("Converting split...")
 
     ann = {a["image_id"]: a["category_id"] for a in split_data["annotations"]}

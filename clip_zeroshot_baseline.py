@@ -1,3 +1,10 @@
+"""
+Zero-shot CLIP baseline evaluation on iNaturalist 2018.
+
+This script evaluates a standard CLIP model (without fine-tuning) on iNaturalist 2018
+to establish a baseline for comparison with the Mixture-of-Prompts approach.
+"""
+
 import torch
 import torch.nn.functional as F
 from torchvision.datasets import INaturalist
@@ -10,12 +17,18 @@ from torchvision import transforms
 from torchvision.transforms import InterpolationMode
 from PIL import Image
 
-# CLIP normalization stats
+# CLIP normalization statistics
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD = (0.26862954, 0.26130258, 0.27577711)
 
-# Basic CLIP-style preprocessing
+
 def preprocess():
+    """
+    Create CLIP-style preprocessing transform.
+
+    Returns:
+        torchvision.transforms.Compose with CLIP normalization
+    """
     def convert_rgb(img):
         return img.convert("RGB") if isinstance(img, Image.Image) else img
 
@@ -27,16 +40,36 @@ def preprocess():
         transforms.Normalize(CLIP_MEAN, CLIP_STD),
     ])
 
-# Load iNaturalist metadata for zeroshot text prompts
-def load_inat_metadata(cat_path):
+def load_inat_metadata(cat_path: str) -> list:
+    """
+    Load iNaturalist category metadata from JSON file.
+
+    Args:
+        cat_path: Path to categories.json
+
+    Returns:
+        List of category dictionaries, sorted by ID
+    """
     with open(cat_path, "r") as f:
         categories = json.load(f)
-    categories.sort(key=lambda x: x["id"])  # ensure consistent order
+    categories.sort(key=lambda x: x["id"])  # Ensure consistent order
     return categories
 
-# Build zeroshot prompt embeddings
+
 @torch.no_grad()
 def build_zeroshot_classifier(model, categories, device, templates=None):
+    """
+    Build zero-shot text classifier weights from category names.
+
+    Args:
+        model: CLIP model instance
+        categories: List of category dictionaries
+        device: Device to run computation on
+        templates: List of prompt templates (default: ["a photo of a {}."])
+
+    Returns:
+        Normalized text embeddings of shape (num_classes, embedding_dim)
+    """
     if templates is None:
         templates = ["a photo of a {}."]
 
@@ -53,6 +86,18 @@ def build_zeroshot_classifier(model, categories, device, templates=None):
 
 @torch.no_grad()
 def evaluate(model, dataloader, zeroshot_weights, device):
+    """
+    Evaluate zero-shot CLIP model on dataset.
+
+    Args:
+        model: CLIP model instance
+        dataloader: DataLoader for evaluation set
+        zeroshot_weights: Text embeddings of shape (num_classes, embedding_dim)
+        device: Device to run evaluation on
+
+    Returns:
+        Top-1 accuracy (float between 0 and 1)
+    """
     model.eval()
     total = 0
     correct = 0

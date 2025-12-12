@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
 """
-Comprehensive test script for MixturePromptCLIP model.
-Tests all functionality before training.
+Comprehensive test suite for MixturePromptCLIP model.
+
+This script runs a battery of tests to verify model functionality before training:
+- Model initialization
+- Forward pass and loss computation
+- Gradient flow
+- Prediction
+- Temperature annealing
+- Config loading
+- Training step simulation
+- Loss component independence
+
+Run this before training to ensure everything is working correctly.
 """
 
 import torch

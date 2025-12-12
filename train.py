@@ -1,4 +1,13 @@
-# train.py
+"""
+Training script for Mixture-of-Prompts CLIP model.
+
+This script handles:
+- Dataset loading and preprocessing
+- Model initialization and checkpoint resuming
+- Training loop with cosine LR scheduling and tau annealing
+- Validation and checkpoint saving
+- Weights & Biases logging
+"""
 
 import os
 import argparse
@@ -15,13 +24,33 @@ from src.datasets.inat_dataset import get_inat2018, extract_hierarchical_metadat
 from src.models.mop_clip import MixturePromptCLIP
 
 
-def load_config(path):
+def load_config(path: str) -> dict:
+    """
+    Load YAML configuration file.
+
+    Args:
+        path: Path to YAML config file
+
+    Returns:
+        Dictionary containing configuration
+    """
     with open(path, "r") as f:
         return yaml.safe_load(f)
 
 
 @torch.no_grad()
 def validate(model, dataloader, device):
+    """
+    Validate model on a dataset split.
+
+    Args:
+        model: MixturePromptCLIP model instance
+        dataloader: DataLoader for validation set
+        device: Device to run validation on
+
+    Returns:
+        Validation accuracy (float between 0 and 1)
+    """
     model.eval()
     total = 0
     correct = 0
@@ -38,7 +67,16 @@ def validate(model, dataloader, device):
 
 
 def cosine_lr(optimizer, base_lr, step, max_steps, warmup_steps=1000):
-    """Cosine LR with linear warmup."""
+    """
+    Apply cosine learning rate schedule with linear warmup.
+
+    Args:
+        optimizer: PyTorch optimizer
+        base_lr: Base learning rate
+        step: Current training step
+        max_steps: Total number of training steps
+        warmup_steps: Number of warmup steps with linear LR increase
+    """
     if step < warmup_steps:
         lr = base_lr * step / max(1, warmup_steps)
     else:
@@ -49,7 +87,14 @@ def cosine_lr(optimizer, base_lr, step, max_steps, warmup_steps=1000):
         g["lr"] = lr
 
 
-def train(config, resume=None):
+def train(config: dict, resume: str = None):
+    """
+    Main training function.
+
+    Args:
+        config: Configuration dictionary from YAML file
+        resume: Optional path to checkpoint to resume from
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 

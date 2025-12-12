@@ -1,4 +1,8 @@
-# eval.py
+"""
+Evaluation script for Mixture-of-Prompts CLIP model.
+
+This script loads a trained checkpoint and evaluates it on the validation set.
+"""
 
 import argparse
 import torch
@@ -11,6 +15,17 @@ from src.models.mop_clip import MixturePromptCLIP
 
 @torch.no_grad()
 def evaluate(model, dataloader, device):
+    """
+    Evaluate model on a dataset.
+
+    Args:
+        model: MixturePromptCLIP model instance
+        dataloader: DataLoader for evaluation set
+        device: Device to run evaluation on
+
+    Returns:
+        Top-1 accuracy (float between 0 and 1)
+    """
     model.eval()
     total = 0
     correct = 0
@@ -50,11 +65,26 @@ def main():
     print("Loading model checkpoint...")
     ckpt = torch.load(args.checkpoint, map_location=device)
 
+    # Extract model configuration from checkpoint or use defaults
+    clip_model = ckpt.get("clip_model", "ViT-B/16")
+    K = ckpt.get("K", 32)  # Try to get K from checkpoint, fallback to 32
+    
+    # If K is not in checkpoint, try to infer from model state dict
+    if K == 32 and "model" in ckpt:
+        # Try to infer K from prompt_offsets shape: (C, K, D)
+        try:
+            prompt_offsets_shape = ckpt["model"]["prompt_offsets"].shape
+            if len(prompt_offsets_shape) == 3:
+                K = prompt_offsets_shape[1]
+                print(f"Inferred K={K} from checkpoint")
+        except (KeyError, AttributeError):
+            pass
+
     model = MixturePromptCLIP(
-        clip_model=ckpt.get("clip_model", "ViT-B/16"),
+        clip_model=clip_model,
         metadata=metadata,
-        K=32,
-        em_tau=0.3,   # not used for prediction
+        K=K,
+        em_tau=0.3,   # Not used for prediction, but required for initialization
     )
     model.load_state_dict(ckpt["model"])
     model = model.to(device)

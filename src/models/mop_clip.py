@@ -1,6 +1,10 @@
-# src/models/mop_clip.py
+"""
+Mixture-of-Prompts CLIP Model Implementation.
 
-import os
+This module implements a CLIP-based model that uses hierarchical text prompts
+and learnable per-class prompt offsets to enable fine-grained classification.
+"""
+
 from typing import List, Dict
 
 import torch
@@ -30,6 +34,16 @@ class MixturePromptCLIP(nn.Module):
         em_tau: float = 1.0,
         cache_dir: str = "text_cache",
     ):
+        """
+        Initialize MixturePromptCLIP model.
+
+        Args:
+            clip_model: CLIP model name (e.g., "ViT-B/16", "ViT-B/32")
+            metadata: List of dicts with keys: species, genus, family, order, scientific_name
+            K: Number of sub-prompts per class
+            em_tau: Temperature parameter for soft EM assignments (higher = softer)
+            cache_dir: Directory for caching (currently unused, kept for compatibility)
+        """
         super().__init__()
 
         self.clip_model_name = clip_model
@@ -41,6 +55,8 @@ class MixturePromptCLIP(nn.Module):
         # Validate metadata ordering matches expected class count
         assert len(metadata) == self.num_classes, \
             f"Metadata length ({len(metadata)}) must match num_classes ({self.num_classes})"
+        
+        # Note: cache_dir parameter is kept for API compatibility but not currently used
 
         # -------------------------------------------------------------
         # Load CLIP model (initially on CPU)
@@ -132,8 +148,10 @@ class MixturePromptCLIP(nn.Module):
 
     # ==========================================================
     # Force base_text_features to remain on CPU when model.to() is called
+    # This prevents moving large text features to GPU unnecessarily
     # ==========================================================
     def _apply(self, fn):
+        """Override _apply to keep base_text_features on CPU."""
         btf_cpu = self.base_text_features
         super()._apply(fn)
         self.base_text_features = btf_cpu
@@ -167,6 +185,15 @@ class MixturePromptCLIP(nn.Module):
     # Full-class prompt features (C, K, D)
     # ==========================================================
     def _all_prompt_features(self, device):
+        """
+        Compute prompt features for all classes.
+
+        Args:
+            device: Target device for computation
+
+        Returns:
+            Tensor of shape (C, K, D) with normalized prompt features for all classes
+        """
         base = self.base_text_features.to(device)     # (C, D)
         offs = self.prompt_offsets.to(device)         # (C, K, D)
 

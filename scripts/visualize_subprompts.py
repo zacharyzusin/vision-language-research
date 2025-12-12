@@ -1,4 +1,9 @@
-# scripts/visualize_subprompts.py
+"""
+Visualization script for Mixture-of-Prompts CLIP model.
+
+This script visualizes which images are assigned to each sub-prompt for a given class.
+It generates grid images showing the top-N images per sub-prompt based on gamma scores.
+"""
 
 import os
 import argparse
@@ -10,6 +15,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(REPO_ROOT)
 
 import torch
+import torch.nn.functional as F
 import torchvision.transforms as T
 import torchvision.utils as vutils
 from torchvision.datasets import INaturalist
@@ -109,9 +115,9 @@ def main():
         clip_model=config["model"]["clip_model"],
         metadata=metadata,
         K=int(config["model"]["K"]),
-        ctx_len=int(config["model"]["ctx_len"]),
         em_tau=float(config["model"].get("em_tau", 1.0)),
     ).to(device)
+    model.clip.to(device)
 
     print(f"Loading checkpoint from {args.checkpoint}")
     ckpt = torch.load(args.checkpoint, map_location=device)
@@ -136,8 +142,14 @@ def main():
         img_batch = img.unsqueeze(0).to(device)
         label_batch = torch.tensor([class_idx], device=device)
 
-        _, gamma = model.get_subprompt_scores_for_labels(img_batch, label_batch)
-        gamma = gamma[0].cpu()  # (K,)
+        # Compute gamma (soft assignment) using model's internal methods
+        with torch.no_grad():
+            img_feat = model.clip.encode_image(img_batch).float()
+            img_feat = torch.nn.functional.normalize(img_feat, dim=-1)
+            prompt_feats = model._batch_prompt_features(label_batch, device)  # (1, K, D)
+            sims = torch.einsum("bd,bkd->bk", img_feat, prompt_feats) * model.sim_scale
+            gamma = torch.nn.functional.softmax(sims / model.em_tau, dim=1)
+            gamma = gamma[0].cpu()  # (K,)
 
         for k in range(K):
             score = float(gamma[k].item())
