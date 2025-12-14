@@ -18,9 +18,9 @@ iNatCode/
 │   ├── models/
 │   │   └── mop_clip.py          # MixturePromptCLIP model implementation
 │   └── datasets/
-│       └── inat_dataset.py      # iNaturalist 2018 dataset loading utilities
+│       └── inat_dataset.py      # iNaturalist dataset loading utilities (supports 2018 & 2021)
 ├── scripts/
-│   ├── convert_inat2018.py      # Dataset format conversion script
+│   ├── convert_inat2018.py      # Dataset format conversion script (supports 2018 & 2021)
 │   └── visualize_subprompts.py  # Visualization of sub-prompt assignments
 ├── configs/
 │   └── default.yaml             # Training configuration
@@ -42,8 +42,17 @@ iNatCode/
 
 ### Dataset Setup
 
-1. Download iNaturalist 2018 dataset
+1. Download iNaturalist 2021 dataset (or 2018 if preferred)
 2. Ensure the following structure:
+   ```
+   data/iNat2021/
+   ├── 2021/                      # Image directories
+   ├── train2021.json
+   ├── val2021.json
+   └── categories.json
+   ```
+   
+   For iNaturalist 2018, use:
    ```
    data/iNat2018/
    ├── 2018/                      # Image directories
@@ -54,7 +63,12 @@ iNatCode/
 
 3. (Optional) Convert to torchvision format using:
    ```bash
-   python scripts/convert_inat2018.py
+   python scripts/convert_inat2018.py --data_root data/iNat2021 --version 2021
+   ```
+   
+   For 2018:
+   ```bash
+   python scripts/convert_inat2018.py --data_root data/iNat2018 --version 2018
    ```
 
 ## Usage
@@ -64,7 +78,8 @@ iNatCode/
 1. Configure training parameters in `configs/default.yaml`:
    ```yaml
    dataset:
-     root: data/iNat2018
+     root: data/iNat2021
+     version: 2021              # Use "2018" for iNaturalist 2018
    
    model:
      clip_model: ViT-B/16
@@ -95,7 +110,12 @@ iNatCode/
 
 Evaluate a trained model:
 ```bash
-python eval.py --checkpoint checkpoints/best_epoch15.pt --data_root data/iNat2018 --batch_size 32
+python eval.py --checkpoint checkpoints/best_epoch15.pt --data_root data/iNat2021 --version 2021 --batch_size 32
+```
+
+For iNaturalist 2018:
+```bash
+python eval.py --checkpoint checkpoints/best_epoch15.pt --data_root data/iNat2018 --version 2018 --batch_size 32
 ```
 
 ### Testing
@@ -136,7 +156,12 @@ Options:
 
 Run zero-shot CLIP baseline:
 ```bash
-python clip_zeroshot_baseline.py --data_root data/iNat2018 --clip_model ViT-B/16 --batch_size 64
+python clip_zeroshot_baseline.py --data_root data/iNat2021 --version 2021 --clip_model ViT-B/16 --batch_size 64
+```
+
+For iNaturalist 2018:
+```bash
+python clip_zeroshot_baseline.py --data_root data/iNat2018 --version 2018 --clip_model ViT-B/16 --batch_size 64
 ```
 
 ## Model Architecture

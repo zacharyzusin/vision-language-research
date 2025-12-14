@@ -1,27 +1,27 @@
 dataset:
-  root: data/iNat2021
-  version: 2021
+  root: data/stanford_cars
+  type: stanford_cars
 
 model:
-  # Much better for fine-grained than ViT-B/32
+  # ViT-B/16 works well for fine-grained classification
   clip_model: ViT-B/16
 
   # Number of sub-prompts per class
-  K: 1
+  K: 32
 
   # EM temperature schedule
   # em_tau_start: initial temperature (softer assignments)
   em_tau_start: 1.0
   # em_tau_end: final temperature (sharper, more specialized)
-  # Lowered from 0.3 to 0.05 for better specialization
   em_tau_end: 0.05
 
 train:
   batch_size: 16       # adjust based on GPU memory
-  lr: 5e-4             # lowered from 1e-3 (more stable for prompt tuning)
+  lr: 5e-4             # learning rate for prompt tuning
   epochs: 30
   warmup_steps: 2000
   lambda_mixture: 0.5  # weight for mixture loss vs classification loss
   temp_cls: 0.07       # temperature for classification logits
-  num_workers: 16      # increased for better I/O parallelism (you have 48 CPU cores)
-  prefetch_factor: 4   # prefetch more batches to keep GPU busy
+  num_workers: 8       # Stanford Cars is smaller, fewer workers needed
+  prefetch_factor: 4   # prefetch batches to keep GPU busy
+

@@ -1,0 +1,20 @@
+dataset:
+  root: data/kikibouba
+  type: kikibouba  # Special flag to use KikiBouba dataset loader
+
+model:
+  clip_model: ViT-B/16
+  K: 32
+  em_tau_start: 1.0
+  em_tau_end: 0.05
+
+train:
+  batch_size: 32       # Multiclass classification (5 classes)
+  lr: 5e-4
+  epochs: 30
+  warmup_steps: 500    # Fewer warmup steps for smaller dataset
+  lambda_mixture: 0.5
+  temp_cls: 0.07
+  num_workers: 8
+  prefetch_factor: 4
+

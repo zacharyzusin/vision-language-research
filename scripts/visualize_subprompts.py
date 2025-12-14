@@ -21,7 +21,7 @@ import torchvision.utils as vutils
 from torchvision.datasets import INaturalist
 
 from train import load_config
-from src.datasets.inat_dataset import get_inat2018, extract_hierarchical_metadata
+from src.datasets.inat_dataset import get_inat, extract_hierarchical_metadata
 from src.models.mop_clip import MixturePromptCLIP
 
 
@@ -86,7 +86,8 @@ def main():
     # ---------------------------
     # Load dataset split
     # ---------------------------
-    subset = get_inat2018(root, args.split)
+    version = str(config["dataset"].get("version", "2021"))
+    subset = get_inat(root, args.split, version=version)
     print(f"Loaded split '{args.split}': {len(subset)} samples")
 
     # subset is a torch.utils.data.Subset over a base INaturalist dataset
@@ -100,9 +101,15 @@ def main():
         T.CenterCrop(224),
         T.ToTensor(),  # [0,1]
     ])
+    # Map version to torchvision's expected format for 2021
+    if version == "2021":
+        tv_version = "2021_train" if args.split == "train" else "2021_valid"
+    else:
+        tv_version = version
+    
     raw_base = INaturalist(
         root=root,
-        version="2018",
+        version=tv_version,
         target_type="full",
         transform=raw_transform,
         download=False,

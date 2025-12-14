@@ -1,0 +1,24 @@
+dataset:
+  root: data/iNat2021
+  version: 2021
+  # Wrasse subset: 5 species (Halichoeres and Thalassoma)
+  category_ids: [2837, 2843, 2844, 2845, 2846]
+
+model:
+  clip_model: ViT-B/16
+  K: 32
+  em_tau_start: 1.0
+  em_tau_end: 0.05
+  use_semantic_init: true
+  offset_reg_weight: 0.01  # 10x stronger regularization to prevent overfitting
+  use_hard_assignment: false
+  use_tau_annealing: true
+
+train:
+  batch_size: 16
+  lr: 1e-4  # Lower learning rate to prevent overfitting
+  epochs: 30
+  warmup_steps: 2000
+  lambda_mixture: 0.5
+  temp_cls: 0.07
+

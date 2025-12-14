@@ -33,6 +33,10 @@ class MixturePromptCLIP(nn.Module):
         K: int = 32,
         em_tau: float = 1.0,
         cache_dir: str = "text_cache",
+        templates: List[str] = None,
+        use_semantic_init: bool = True,
+        offset_reg_weight: float = 0.001,
+        use_hard_assignment: bool = False,
     ):
         """
         Initialize MixturePromptCLIP model.
@@ -40,9 +44,11 @@ class MixturePromptCLIP(nn.Module):
         Args:
             clip_model: CLIP model name (e.g., "ViT-B/16", "ViT-B/32")
             metadata: List of dicts with keys: species, genus, family, order, scientific_name
+                     (or make, model, type, category, full_name for cars)
             K: Number of sub-prompts per class
             em_tau: Temperature parameter for soft EM assignments (higher = softer)
             cache_dir: Directory for caching (currently unused, kept for compatibility)
+            templates: Optional list of template strings. If None, auto-detects based on metadata.
         """
         super().__init__()
 
@@ -71,30 +77,46 @@ class MixturePromptCLIP(nn.Module):
         self.D = self.clip.text_projection.shape[0]  # 512 for ViT-B/32/B/16
 
         # -------------------------------------------------------------
-        # Hierarchical template strings
+        # Hierarchical template strings - auto-detect or use provided
         # -------------------------------------------------------------
-        templates = [
-            "a photo of {species}",
-            "a wildlife photo of the species {scientific_name}",
-            "an organism belonging to genus {genus}",
-            "an organism belonging to family {family}",
-            "a species in the order {order}",
-        ]
+        if templates is None:
+            # Auto-detect template type based on metadata keys
+            sample_metadata = metadata[0] if metadata else {}
+            if "make" in sample_metadata or "model" in sample_metadata:
+                # Car dataset - use car-specific templates
+                templates = [
+                    "a photo of {full_name}",
+                    "a {full_name} car",
+                    "a {make} {model}",
+                    "a {type} made by {make}",
+                    "a {category} vehicle: {full_name}",
+                ]
+            else:
+                # iNaturalist/wildlife dataset - use biological templates
+                templates = [
+                    "a photo of {species}",
+                    "a wildlife photo of the species {scientific_name}",
+                    "an organism belonging to genus {genus}",
+                    "an organism belonging to family {family}",
+                    "a species in the order {order}",
+                ]
+        else:
+            templates = templates
 
         print(f"Building hierarchical prompts with {len(templates)} templates per class...")
 
         all_prompts = []
         for md in metadata:
             for tmpl in templates:
-                all_prompts.append(
-                    tmpl.format(
-                        species=md["species"],
-                        genus=md["genus"],
-                        family=md["family"],
-                        order=md["order"],
-                        scientific_name=md["scientific_name"],
-                    )
-                )
+                # Try to format with available keys (handles both car and wildlife formats)
+                try:
+                    all_prompts.append(tmpl.format(**md))
+                except KeyError as e:
+                    # Fallback: use get() with empty string for missing keys
+                    formatted = tmpl
+                    for key in md.keys():
+                        formatted = formatted.replace(f"{{{key}}}", str(md.get(key, "")))
+                    all_prompts.append(formatted)
 
         C = self.num_classes
         T = len(templates)
@@ -137,11 +159,19 @@ class MixturePromptCLIP(nn.Module):
         # Per-class learnable prompt offsets
         # Shape: (C, K, D)
         # -------------------------------------------------------------
-        self.prompt_offsets = nn.Parameter(torch.randn(C, self.K, self.D) * 0.01)
+        if use_semantic_init:
+            # Semantic initialization: initialize near base text features
+            self.prompt_offsets = nn.Parameter(torch.randn(C, self.K, self.D) * 0.01)
+        else:
+            # Random initialization: start from zero
+            self.prompt_offsets = nn.Parameter(torch.zeros(C, self.K, self.D))
         print(f"Initialized per-class prompt offsets: {self.prompt_offsets.shape}")
+        if not use_semantic_init:
+            print("  (Random initialization, no semantic init)")
         
         # Regularization strength for prompt offsets
-        self.offset_reg_weight = 0.001
+        self.offset_reg_weight = offset_reg_weight
+        self.use_hard_assignment = use_hard_assignment
         
         # CLIP-style similarity scaling factor
         self.sim_scale = 50.0
@@ -227,8 +257,15 @@ class MixturePromptCLIP(nn.Module):
         sims_mixture = torch.einsum("bd,bkd->bk", img_feat, prompt_feats)  # (B, K)
         sims_mixture = sims_mixture * self.sim_scale  # CLIP-style scaling
 
-        # Soft responsibilities (E-step surrogate)
-        gamma = F.softmax(sims_mixture / self.em_tau, dim=1).detach()
+        # Soft or hard responsibilities (E-step surrogate)
+        if self.use_hard_assignment:
+            # Hard assignment: argmax
+            gamma = torch.zeros_like(sims_mixture)
+            gamma.scatter_(1, sims_mixture.argmax(dim=1, keepdim=True), 1.0)
+            gamma = gamma.detach()
+        else:
+            # Soft assignment: softmax
+            gamma = F.softmax(sims_mixture / self.em_tau, dim=1).detach()
 
         # Expected negative similarity under gamma
         loss_mixture = -(gamma * sims_mixture).sum(dim=1).mean()

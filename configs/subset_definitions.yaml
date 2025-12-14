@@ -1,0 +1,36 @@
+# Fine-grained subset definitions for iNaturalist 2021
+# Each subset contains species from a specific taxonomic group
+
+subsets:
+  lichen:
+    name: "Lichen"
+    description: "Lichen species (Fungi) - all Teloschistaceae family"
+    category_ids: [5438, 5439, 5440, 5441, 5442, 5443]  # All 6 Teloschistaceae species
+    # Includes: Rusavskia elegans (elegant sunburst), Teloschistes spp., Xanthomendoza, Xanthoria
+    expected_count: 6
+    
+  wrasse:
+    name: "Wrasse"
+    description: "Wrasse fish species"
+    category_ids: [2837, 2843, 2844, 2845, 2846]  # Halichoeres and Thalassoma species
+    # Selected 5 from the 6 found
+    expected_count: 5
+    
+  wild_rye:
+    name: "Wild Rye"
+    description: "Wild rye grass species"
+    category_ids: [6371, 6372, 6373, 6374, 6375]  # Elymus species
+    expected_count: 5
+    
+  manzanita:
+    name: "Manzanita"
+    description: "Manzanita berry shrub species"
+    category_ids: [7709, 7710, 7711, 7712, 7713]  # Arctostaphylos species
+    expected_count: 5
+    
+  bulrush:
+    name: "Bulrush"
+    description: "Bulrush herb species"
+    category_ids: [6297, 6298, 6299, 6300, 6301]  # Scirpus species
+    # Selected 5 from the 9 found
+    expected_count: 5

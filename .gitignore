@@ -5,16 +5,99 @@ text_cache/
 # Python cache
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
 
-# Checkpoints
+# Checkpoints and model files
 checkpoints/
 *.pt
+*.pth
+*.ckpt
+*.pkl
+*.h5
 
 # Virtual environment
 myenv/
 env/
 venv/
+ENV/
+env.bak/
+venv.bak/
 
+# Weights & Biases
 wandb/
+
+# Output directories
 subprompt_results/
 viz_outputs/
+
+# Stanford Cars dataset (if downloaded manually)
+car_devkit/
+cars_test/
+cars_train/
+--help/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+download_log.txt
+
+# Temporary files
+*.tmp
+*.temp
+=*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyTorch
+*.pth.tar
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json

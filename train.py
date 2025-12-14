@@ -20,7 +20,9 @@ from tqdm import tqdm
 
 import wandb
 
-from src.datasets.inat_dataset import get_inat2018, extract_hierarchical_metadata
+from src.datasets.inat_dataset import get_inat, extract_hierarchical_metadata
+from src.datasets.kikibouba_dataset import get_kikibouba, extract_kikibouba_metadata
+from src.datasets.stanford_cars_dataset import get_stanford_cars, extract_stanford_cars_metadata
 from src.models.mop_clip import MixturePromptCLIP
 
 
@@ -102,29 +104,61 @@ def train(config: dict, resume: str = None):
     # Dataset
     # =====================
     root = config["dataset"]["root"]
+    dataset_type = config["dataset"].get("type", "inat")  # "inat", "kikibouba", or "stanford_cars"
+    
+    if dataset_type == "kikibouba":
+        # KikiBouba dataset (multiclass classification)
+        train_ds = get_kikibouba(root, "train")
+        val_ds = get_kikibouba(root, "val")
+        metadata = extract_kikibouba_metadata(root)
+        category_ids = None  # Not used for KikiBouba
+    elif dataset_type == "stanford_cars":
+        # Stanford Cars dataset
+        train_ds = get_stanford_cars(root, "train")
+        val_ds = get_stanford_cars(root, "val")  # Maps to test split
+        metadata = extract_stanford_cars_metadata(root)
+        category_ids = None  # Not used for Stanford Cars
+    else:
+        # iNaturalist dataset
+        version = str(config["dataset"]["version"])
+        
+        # Support subset training via category_ids
+        category_ids = config["dataset"].get("category_ids", None)
+        if category_ids is not None:
+            print(f"Training on subset with {len(category_ids)} classes: {category_ids}")
+        
+        train_ds = get_inat(root, "train", version=version, category_ids=category_ids)
+        val_ds   = get_inat(root, "val", version=version, category_ids=category_ids)
+        metadata = extract_hierarchical_metadata(root, category_ids=category_ids)
 
-    train_ds = get_inat2018(root, "train")
-    val_ds   = get_inat2018(root, "val")
-
+    # Use more workers for large datasets (2021 has 2.7M samples)
+    # With 48 CPU cores, we can use more workers for better I/O parallelism
+    # For KikiBouba and Stanford Cars, use fewer workers since they're smaller datasets
+    default_workers = 8 if dataset_type in ["kikibouba", "stanford_cars"] else 16
+    num_workers = config["train"].get("num_workers", default_workers)
+    prefetch_factor = config["train"].get("prefetch_factor", 4)  # Prefetch more batches
+    
     train_loader = DataLoader(
         train_ds,
         batch_size=config["train"]["batch_size"],
         shuffle=True,
-        num_workers=8,
+        num_workers=num_workers,
         pin_memory=True,
         persistent_workers=True,
+        prefetch_factor=prefetch_factor,
     )
 
     val_loader = DataLoader(
         val_ds,
         batch_size=config["train"]["batch_size"],
         shuffle=False,
-        num_workers=8,
+        num_workers=num_workers,
         pin_memory=True,
         persistent_workers=True,
+        prefetch_factor=prefetch_factor,
     )
 
-    metadata = extract_hierarchical_metadata(root)
+    # Metadata already loaded above based on dataset type
 
     # =====================
     # W&B
@@ -137,11 +171,19 @@ def train(config: dict, resume: str = None):
     em_tau_start = float(config["model"].get("em_tau_start", 1.0))
     em_tau_end   = float(config["model"].get("em_tau_end", 0.3))
 
+    # Ablation parameters
+    use_semantic_init = config["model"].get("use_semantic_init", True)
+    offset_reg_weight = config["model"].get("offset_reg_weight", 0.001)
+    use_hard_assignment = config["model"].get("use_hard_assignment", False)
+    
     model = MixturePromptCLIP(
         clip_model=config["model"]["clip_model"],
         metadata=metadata,
         K=config["model"]["K"],
         em_tau=em_tau_start,
+        use_semantic_init=use_semantic_init,
+        offset_reg_weight=offset_reg_weight,
+        use_hard_assignment=use_hard_assignment,
     )
     model = model.to(device)
     model.clip.to(device)
@@ -212,9 +254,14 @@ def train(config: dict, resume: str = None):
             # -----------------------
             # τ-Annealing (RESUMABLE)
             # -----------------------
-            progress = min(1.0, step / tau_anneal_steps)
-            current_tau = em_tau_end + (em_tau_start - em_tau_end) * (1.0 - progress)
-            model.em_tau = float(current_tau)
+            use_tau_annealing = config["model"].get("use_tau_annealing", True)
+            if use_tau_annealing:
+                progress = min(1.0, step / tau_anneal_steps)
+                current_tau = em_tau_end + (em_tau_start - em_tau_end) * (1.0 - progress)
+                model.em_tau = float(current_tau)
+            else:
+                # Fixed temperature
+                model.em_tau = float(em_tau_start)
 
             step += 1
 

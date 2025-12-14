@@ -1,13 +1,13 @@
 dataset:
-  root: data/iNat2021
-  version: 2021
+  root: data/iNat2018
+  version: 2018
 
 model:
   # Much better for fine-grained than ViT-B/32
   clip_model: ViT-B/16
 
   # Number of sub-prompts per class
-  K: 1
+  K: 32
 
   # EM temperature schedule
   # em_tau_start: initial temperature (softer assignments)
@@ -23,5 +23,3 @@ train:
   warmup_steps: 2000
   lambda_mixture: 0.5  # weight for mixture loss vs classification loss
   temp_cls: 0.07       # temperature for classification logits
-  num_workers: 16      # increased for better I/O parallelism (you have 48 CPU cores)
-  prefetch_factor: 4   # prefetch more batches to keep GPU busy
