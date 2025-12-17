@@ -4,14 +4,23 @@ This guide explains how to use the KikiBouba dataset with the MoP-CLIP training 
 
 ## Dataset Overview
 
-KikiBouba is a multiclass classification dataset with five classes:
-- **bouba**: Round, curved shapes (label 0)
-- **galaga**: Sharp, angular shapes variant (label 1)
-- **kepike**: Sharp, angular shapes variant (label 2)
-- **kiki**: Sharp, angular shapes variant (label 3)
-- **maluma**: Sharp, angular shapes variant (label 4)
+We support **two related KikiBouba datasets**:
 
-The dataset structure:
+- **KikiBouba v2** (renamed/cleaned version; class names: bouba/galaga/kepike/kiki/maluma)
+- **KikiBouba v1** (original release; class names: bamaba/duludu/gaduga/lomulo/nomano)
+
+Both are treated as 5-way multiclass classification problems.
+
+### KikiBouba v2
+
+KikiBouba v2 has five classes:
+- **bouba**
+- **galaga**
+- **kepike**
+- **kiki**
+- **maluma**
+
+The v2 dataset structure:
 ```
 kiki_bouba_v2_split/
     train/
@@ -30,6 +39,45 @@ kiki_bouba_v2_split/
 
 Each directory is treated as a separate class for multiclass classification.
 
+### KikiBouba v1
+
+We also support the original **KikiBouba v1** release. It has five classes:
+- **bamaba**
+- **duludu**
+- **gaduga**
+- **lomulo**
+- **nomano**
+
+Its folder layout is compatible as long as it ends up in one of these forms
+under `data/kikibouba/`:
+
+```
+data/kikibouba/
+    kiki_bouba_v1_split/
+        train/
+            bouba/
+            galaga/
+            ...
+        val/   # or test/
+            bouba/
+            galaga/
+            ...
+```
+
+or
+
+```
+data/kikibouba/
+    train/
+        bouba/
+        galaga/
+        ...
+    val/   # or test/
+        bouba/
+        galaga/
+        ...
+```
+
 ## Dataset Statistics
 
 - **Training samples**: 4,177 total
@@ -47,20 +95,45 @@ Each directory is treated as a separate class for multiclass classification.
 
 The dataset has been downloaded to: `data/kikibouba/kiki_bouba_v2_split/`
 
-If you need to download it again:
+If you need to download **v2** again:
 ```bash
 cd data/kikibouba
 gdown "https://drive.google.com/uc?id=17ibF3tzFiZrMb9ZnpYlLEh-xmWkPJpNH" -O kiki_bouba_v2_split.zip
 unzip kiki_bouba_v2_split.zip
 ```
 
-### 2. Train Model
+To use **KikiBouba v1** (for example, from
+`https://drive.google.com/file/d/1s26MlkNJUXTvuthj5Q2g2WRIx5ttP1Ei/view`):
+
+1. Download the file (via browser or `gdown`) into `data/kikibouba/`.
+2. Unzip/extract it so that you end up with either:
+   - `data/kikibouba/kiki_bouba_v1_split/train/...` and `val/` (or `test/`), or
+   - `data/kikibouba/train/...` and `val/` (or `test/`) directly.
+
+The loader will automatically detect both v1 and v2 layouts; you do **not**
+need to change any code or config as long as the split folders are in one of
+those locations.
+
+### 2. Train Model (separate configs for v1 and v2)
+
+- **Train on KikiBouba v2**:
 
 ```bash
-python train.py --config configs/kikibouba.yaml
+python train.py --config configs/kikibouba_v2.yaml
 ```
 
+- **Train on KikiBouba v1**:
+
+```bash
+python train.py --config configs/kikibouba_v1.yaml
+```
+
+Both configs point to `data/kikibouba` but set `dataset.version` differently so
+you can run completely separate trainings.
+
 ### 3. Evaluate Model
+
+For example, to evaluate a trained checkpoint:
 
 ```bash
 python eval.py --checkpoint checkpoints/best_epoch15.pt \

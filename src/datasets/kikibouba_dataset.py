@@ -49,6 +49,7 @@ class KikiBoubaDataset(Dataset):
         root: str,
         split: Literal["train", "val", "test"],
         transform=None,
+        version: Optional[str] = None,
     ):
         """
         Args:
@@ -59,19 +60,77 @@ class KikiBoubaDataset(Dataset):
         self.root = root
         self.split = split
         self.transform = transform if transform is not None else _make_transform()
-        
-        # Find the dataset directory
-        dataset_dir = os.path.join(root, "kiki_bouba_v2_split")
-        if not os.path.exists(dataset_dir):
-            # Try alternative locations
-            if os.path.exists(os.path.join(root, split)):
-                dataset_dir = root
+
+        # ----------------------------------------
+        # Locate dataset directory (v2 or v1)
+        # ----------------------------------------
+        #
+        # We support both:
+        #   - kiki_bouba_v2_split/ (current default)
+        #   - kiki_bouba_v1_split/ (legacy v1)
+        # as well as the case where the user unzips directly into `root/`
+        # and `root` itself contains `train/`, `val/` or `test/`.
+        #
+        # If `version` is provided, we prioritize / require that version;
+        # otherwise we will auto-detect whichever split folder exists.
+        #
+        if version is not None:
+            version = version.lower()
+            if version not in {"v1", "v2"}:
+                raise ValueError(f"Unsupported KikiBouba version: {version}. Expected 'v1' or 'v2'.")
+
+        if version == "v2":
+            candidate_roots = [
+                os.path.join(root, "kiki_bouba_v2_split"),
+                root,
+            ]
+        elif version == "v1":
+            candidate_roots = [
+                os.path.join(root, "kiki_bouba_v1_split"),
+                root,
+            ]
+        else:
+            candidate_roots = [
+                os.path.join(root, "kiki_bouba_v2_split"),
+                os.path.join(root, "kiki_bouba_v1_split"),
+                root,
+            ]
+
+        dataset_dir = None
+        for cand in candidate_roots:
+            if os.path.exists(os.path.join(cand, split)):
+                dataset_dir = cand
+                break
+
+        if dataset_dir is None:
+            # As a last resort, fall back to the original error message for clarity
+            base_msg = "Could not find KikiBouba dataset directory.\n"
+            if version == "v2":
+                expected = [
+                    os.path.join(root, "kiki_bouba_v2_split", split),
+                    os.path.join(root, split),
+                ]
+            elif version == "v1":
+                expected = [
+                    os.path.join(root, "kiki_bouba_v1_split", split),
+                    os.path.join(root, split),
+                ]
             else:
-                raise FileNotFoundError(
-                    f"Could not find KikiBouba dataset directory. "
-                    f"Expected: {dataset_dir} or {os.path.join(root, split)}"
-                )
-        
+                expected = [
+                    os.path.join(root, "kiki_bouba_v2_split", split),
+                    os.path.join(root, "kiki_bouba_v1_split", split),
+                    os.path.join(root, split),
+                ]
+
+            tried_str = "\n".join([f"    - {p}" for p in expected])
+            raise FileNotFoundError(
+                base_msg
+                + "  Tried:\n"
+                + tried_str
+                + "\nPlease ensure you unzipped the dataset so that one of these "
+                  "paths exists, or set dataset.version correctly in the config."
+            )
+
         # Find split directory
         split_dir = os.path.join(dataset_dir, split)
         if not os.path.exists(split_dir):
@@ -151,6 +210,7 @@ def get_kikibouba(
     root: str,
     split: Literal["train", "val", "test"],
     transform=None,
+    version: Optional[str] = None,
 ):
     """
     Get KikiBouba dataset for specified split.
@@ -163,7 +223,7 @@ def get_kikibouba(
     Returns:
         KikiBoubaDataset instance
     """
-    return KikiBoubaDataset(root=root, split=split, transform=transform)
+    return KikiBoubaDataset(root=root, split=split, transform=transform, version=version)
 
 
 def extract_kikibouba_metadata(root: str) -> list:

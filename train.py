@@ -89,6 +89,45 @@ def cosine_lr(optimizer, base_lr, step, max_steps, warmup_steps=1000):
         g["lr"] = lr
 
 
+def _build_experiment_name(config: dict, dataset_type: str) -> str:
+    """
+    Build a descriptive experiment name for organizing checkpoints.
+
+    Format examples:
+      - inat_v2021_K1_ViT-B-16
+      - inat_subset_wrasse_K32_ViT-B-16
+      - kikibouba_v1_K32_ViT-B-16
+      - stanford_cars_K32_ViT-B-16
+    """
+    model_cfg = config.get("model", {})
+    dataset_cfg = config.get("dataset", {})
+
+    clip_model = str(model_cfg.get("clip_model", "unknown")).replace("/", "-")
+    K = model_cfg.get("K", "K")
+
+    if dataset_type == "inat":
+        version = str(dataset_cfg.get("version", "unknown"))
+        subset_name = dataset_cfg.get("subset_name", None)
+        if subset_name is None and dataset_cfg.get("category_ids") is not None:
+            subset_name = "subset"
+        if subset_name:
+            ds_part = f"inat_{subset_name}_v{version}"
+        else:
+            ds_part = f"inat_v{version}"
+    elif dataset_type == "kikibouba":
+        kb_version = dataset_cfg.get("version", None)
+        if kb_version:
+            ds_part = f"kikibouba_{kb_version}"
+        else:
+            ds_part = "kikibouba"
+    elif dataset_type == "stanford_cars":
+        ds_part = "stanford_cars"
+    else:
+        ds_part = dataset_type
+
+    return f"{ds_part}_K{K}_{clip_model}"
+
+
 def train(config: dict, resume: str = None):
     """
     Main training function.
@@ -108,8 +147,12 @@ def train(config: dict, resume: str = None):
     
     if dataset_type == "kikibouba":
         # KikiBouba dataset (multiclass classification)
-        train_ds = get_kikibouba(root, "train")
-        val_ds = get_kikibouba(root, "val")
+        kb_version = config["dataset"].get("version", None)
+        if kb_version is not None:
+            print(f"Using KikiBouba dataset version: {kb_version}")
+
+        train_ds = get_kikibouba(root, "train", version=kb_version)
+        val_ds = get_kikibouba(root, "val", version=kb_version)
         metadata = extract_kikibouba_metadata(root)
         category_ids = None  # Not used for KikiBouba
     elif dataset_type == "stanford_cars":
@@ -130,6 +173,10 @@ def train(config: dict, resume: str = None):
         train_ds = get_inat(root, "train", version=version, category_ids=category_ids)
         val_ds   = get_inat(root, "val", version=version, category_ids=category_ids)
         metadata = extract_hierarchical_metadata(root, category_ids=category_ids)
+
+    # Build experiment name for organizing checkpoints
+    experiment_name = _build_experiment_name(config, dataset_type)
+    print(f"Experiment name: {experiment_name}")
 
     # Use more workers for large datasets (2021 has 2.7M samples)
     # With 48 CPU cores, we can use more workers for better I/O parallelism
@@ -225,7 +272,8 @@ def train(config: dict, resume: str = None):
         print(f"→ Resumed global step {step}")
         print(f"→ Restored τ = {current_tau}")
 
-    os.makedirs("checkpoints", exist_ok=True)
+    ckpt_dir = os.path.join("checkpoints", experiment_name)
+    os.makedirs(ckpt_dir, exist_ok=True)
 
     # =====================
     # TRAIN LOOP
@@ -323,7 +371,8 @@ def train(config: dict, resume: str = None):
         # Save Checkpoint
         # =====================
         if is_best:
-            ckpt_path = f"checkpoints/best_epoch{epoch}.pt"
+            ckpt_filename = f"{experiment_name}_best_epoch{epoch}.pt"
+            ckpt_path = os.path.join(ckpt_dir, ckpt_filename)
             torch.save({
                 "epoch": epoch,
                 "step": step,
