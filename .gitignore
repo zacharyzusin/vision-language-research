@@ -54,6 +54,14 @@ cars_train/
 *.log
 download_log.txt
 
+# Slurm job logs
+logs/*.out
+logs/*.err
+logs/train_ddp_*.out
+logs/train_ddp_*.err
+logs/inat2021_download_*.out
+logs/inat2021_download_*.err
+
 # Temporary files
 *.tmp
 *.temp
@@ -90,12 +98,34 @@ MANIFEST
 # PyTorch
 *.pth.tar
 
+# Slurm job scripts (optional - uncomment if you don't want to track these)
+# *.sbatch
+# train_mop_ddp*.sh
+
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
 .hypothesis/
+
+# Conda/Anaconda
+.conda/
+conda-meta/
+
+# Environment variables
+.env
+.env.local
+
+# Large data files and archives
+*.tar.gz
+*.zip
+*.tar
+!scripts/*.tar.gz  # Keep download scripts if needed
+
+# Temporary download files
+*.part
+*.tmp.*
 
 # MyPy
 .mypy_cache/

@@ -1,121 +1,141 @@
 #!/bin/bash
-# Download script for iNaturalist 2021 dataset
+# Download script for iNaturalist 2021 competition dataset
 # Based on official competition repository: https://github.com/visipedia/inat_comp/tree/master/2021
+#
+# Non-interactive behavior (cluster-friendly):
+# - Always downloads annotations into DATA_ROOT
+# - Extracts categories.json from train2021.json for stable label ordering
+# - Downloads images only if DOWNLOAD_IMAGES=1
+# - Optional streaming extract (no tar.gz stored) with STREAM_EXTRACT=1
+#
+# Expected resulting layout for this repo's loader (`src/datasets/inat_dataset.py`):
+#   DATA_ROOT/train2021.json
+#   DATA_ROOT/val2021.json
+#   DATA_ROOT/categories.json
+#   DATA_ROOT/2021/train/...
+#   DATA_ROOT/2021/val/...
 
-set -e  # Exit on error
+set -euo pipefail
 
-# Configuration
 DATA_ROOT="${1:-data/iNat2021}"
 BASE_URL="https://ml-inat-competition-datasets.s3.amazonaws.com/2021"
+
+# Env flags (defaults are safe)
+DOWNLOAD_IMAGES="${DOWNLOAD_IMAGES:-0}"   # 1 to download images, 0 to skip
+STREAM_EXTRACT="${STREAM_EXTRACT:-0}"    # 1 to stream-extract (no tar.gz stored)
+KEEP_ARCHIVES="${KEEP_ARCHIVES:-0}"      # 1 to keep train.tar.gz/val.tar.gz when not streaming
 
 echo "=========================================="
 echo "iNaturalist 2021 Dataset Download Script"
 echo "=========================================="
 echo ""
-echo "Download directory: $DATA_ROOT"
+echo "Download directory: ${DATA_ROOT}"
+echo "Download images:    ${DOWNLOAD_IMAGES}"
+echo "Stream extract:     ${STREAM_EXTRACT}"
+echo "Keep archives:      ${KEEP_ARCHIVES}"
 echo ""
 
-# Create directory
-mkdir -p "$DATA_ROOT"
-cd "$DATA_ROOT"
+mkdir -p "${DATA_ROOT}"
+cd "${DATA_ROOT}"
 
-# Download annotation files
 echo "Downloading annotation files..."
 echo ""
 
-# Training annotations
-echo "1. Downloading train2021.json..."
 if [ ! -f "train2021.json" ]; then
+  echo "1) Downloading train2021.json ..."
     wget -O train.json.tar.gz "${BASE_URL}/train.json.tar.gz"
     tar -xzf train.json.tar.gz
-    rm train.json.tar.gz
-    echo "   ✓ train2021.json downloaded"
+  rm -f train.json.tar.gz
+  # Official archive extracts to train.json; normalize to train2021.json for this repo.
+  if [ -f "train.json" ] && [ ! -f "train2021.json" ]; then
+    mv -f train.json train2021.json
+  fi
 else
-    echo "   ✓ train2021.json already exists"
+  echo "1) train2021.json already exists"
 fi
 
-# Validation annotations
-echo "2. Downloading val2021.json..."
 if [ ! -f "val2021.json" ]; then
+  echo "2) Downloading val2021.json ..."
     wget -O val.json.tar.gz "${BASE_URL}/val.json.tar.gz"
     tar -xzf val.json.tar.gz
-    rm val.json.tar.gz
-    echo "   ✓ val2021.json downloaded"
+  rm -f val.json.tar.gz
+  # Official archive extracts to val.json; normalize to val2021.json for this repo.
+  if [ -f "val.json" ] && [ ! -f "val2021.json" ]; then
+    mv -f val.json val2021.json
+  fi
 else
-    echo "   ✓ val2021.json already exists"
+  echo "2) val2021.json already exists"
 fi
 
-# Extract categories.json from train2021.json if needed
-# (categories.json is typically embedded in the annotation files)
 echo ""
-echo "3. Checking for categories.json..."
+echo "3) Ensuring categories.json exists (extracted from train2021.json) ..."
 if [ ! -f "categories.json" ]; then
-    echo "   Note: categories.json should be extracted from train2021.json"
-    echo "   You may need to extract it manually or it may be included in the archive"
+  python - <<'PY'
+import json
+with open("train2021.json","r") as f:
+    data=json.load(f)
+cats=data.get("categories")
+if not cats:
+    raise SystemExit("train2021.json did not contain a 'categories' field; cannot extract categories.json")
+with open("categories.json","w") as f:
+    json.dump(cats,f)
+print(f"Wrote categories.json with {len(cats)} categories")
+PY
+else
+  echo "categories.json already exists"
 fi
 
-# Check available disk space
 echo ""
 echo "Checking available disk space..."
-AVAILABLE_SPACE=$(df -BG "$DATA_ROOT" | tail -1 | awk '{print $4}' | sed 's/G//')
-REQUIRED_SPACE=300  # GB
-if [ "$AVAILABLE_SPACE" -lt "$REQUIRED_SPACE" ]; then
-    echo "⚠️  WARNING: Only ${AVAILABLE_SPACE}GB available, but ${REQUIRED_SPACE}GB+ needed"
-    echo "   Consider downloading to a different location with more space"
-    echo ""
+AVAILABLE_SPACE=$(df -BG . | tail -1 | awk '{print $4}' | sed 's/G//')
+REQUIRED_SPACE=300  # GB (rough guideline)
+if [ "${AVAILABLE_SPACE:-0}" -lt "${REQUIRED_SPACE}" ]; then
+  echo "WARNING: Only ${AVAILABLE_SPACE}GB available, but ${REQUIRED_SPACE}GB+ recommended for full dataset."
 fi
 
-# Download training images (WARNING: This is ~300GB!)
+mkdir -p "2021"
+
+if [ "${DOWNLOAD_IMAGES}" = "1" ]; then
+  echo ""
+  echo "Downloading and extracting images..."
+  echo "  - train.tar.gz is ~223GB compressed"
+  echo "  - val.tar.gz is ~9GB compressed"
+
+  if [ "${STREAM_EXTRACT}" = "1" ]; then
 echo ""
-echo "=========================================="
-echo "Image Downloads (LARGE FILES - ~300GB)"
-echo "=========================================="
+    echo "Streaming download + extract: train -> 2021/"
+    wget -qO- "${BASE_URL}/train.tar.gz" | tar -xzf - -C 2021/
+    echo "Done: train"
+
 echo ""
-echo "Training images: ~270GB (223GB compressed)"
-echo "Validation images: ~10GB"
-echo "Available space: ${AVAILABLE_SPACE}GB"
+    echo "Streaming download + extract: val -> 2021/"
+    wget -qO- "${BASE_URL}/val.tar.gz" | tar -xzf - -C 2021/
+    echo "Done: val"
+  else
 echo ""
-read -p "Do you want to download the training images? (y/N): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    # Check if partial download exists
-    if [ -f "train.tar.gz" ]; then
-        echo "Found existing train.tar.gz (may be partial download)"
-        read -p "Resume download? (y) or Delete and restart? (d) or Skip? (N): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Dd]$ ]]; then
-            rm -f train.tar.gz
-            echo "Downloading training images (this may take a long time)..."
-            wget -O train.tar.gz "${BASE_URL}/train.tar.gz"
-        elif [[ $REPLY =~ ^[Yy]$ ]]; then
-            echo "Resuming download of training images..."
+    echo "Downloading train.tar.gz (resume enabled) ..."
             wget -c -O train.tar.gz "${BASE_URL}/train.tar.gz"
-        else
-            echo "Skipping training images download"
-        fi
-    else
-        echo "Downloading training images (this may take a long time)..."
-        wget -O train.tar.gz "${BASE_URL}/train.tar.gz"
-    fi
-    echo "Extracting training images..."
-    tar -xzf train.tar.gz
-    echo "   ✓ Training images extracted"
-    # Optionally remove archive to save space
-    read -p "Remove train.tar.gz to save space? (y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        rm train.tar.gz
+    echo "Extracting train -> 2021/ ..."
+    tar -xzf train.tar.gz -C 2021/
+    echo "Done: train"
+
+    echo ""
+    echo "Downloading val.tar.gz (resume enabled) ..."
+    wget -c -O val.tar.gz "${BASE_URL}/val.tar.gz"
+    echo "Extracting val -> 2021/ ..."
+    tar -xzf val.tar.gz -C 2021/
+    echo "Done: val"
+
+    if [ "${KEEP_ARCHIVES}" != "1" ]; then
+      rm -f train.tar.gz val.tar.gz
     fi
 fi
+else
+  echo ""
+  echo "Skipping image download (set DOWNLOAD_IMAGES=1 to download images)."
+fi
 
-read -p "Do you want to download the validation images? (y/N): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    echo "Downloading validation images..."
-    wget -O val.tar.gz "${BASE_URL}/val.tar.gz"
-    echo "Extracting validation images..."
-    tar -xzf val.tar.gz
-    echo "   ✓ Validation images extracted"
-    # Optionally remove archive to save space
-    read -p "Remove val.tar.gz to save space? (y/N): " -n 1 -r
-    echo
+echo ""
+echo "Done."
+
+

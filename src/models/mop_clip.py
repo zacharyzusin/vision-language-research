@@ -175,6 +175,11 @@ class MixturePromptCLIP(nn.Module):
         
         # CLIP-style similarity scaling factor
         self.sim_scale = 50.0
+        
+        # Cache for _all_prompt_features to avoid recomputing every batch
+        # This is expensive: (C, K, D) = (10000, 32, 512) = ~163M params
+        self._cached_all_prompts = None
+        self._cached_all_prompts_device = None
 
     # ==========================================================
     # Force base_text_features to remain on CPU when model.to() is called
@@ -217,6 +222,7 @@ class MixturePromptCLIP(nn.Module):
     def _all_prompt_features(self, device):
         """
         Compute prompt features for all classes.
+        CACHED: Only recomputes when device changes or after training step.
 
         Args:
             device: Target device for computation
@@ -224,11 +230,29 @@ class MixturePromptCLIP(nn.Module):
         Returns:
             Tensor of shape (C, K, D) with normalized prompt features for all classes
         """
+        # Check if cache is valid (same device and prompt_offsets haven't changed)
+        if (self._cached_all_prompts is not None and 
+            self._cached_all_prompts_device == device and
+            self._cached_all_prompts.device == device):
+            return self._cached_all_prompts
+        
+        # Recompute and cache
         base = self.base_text_features.to(device)     # (C, D)
         offs = self.prompt_offsets.to(device)         # (C, K, D)
 
         prompts = base.unsqueeze(1) + offs            # (C, K, D)
-        return F.normalize(prompts, dim=-1)
+        prompts = F.normalize(prompts, dim=-1)
+        
+        # Cache the result
+        self._cached_all_prompts = prompts
+        self._cached_all_prompts_device = device
+        
+        return prompts
+    
+    def _invalidate_all_prompts_cache(self):
+        """Invalidate the cached all_prompts after optimizer step."""
+        self._cached_all_prompts = None
+        self._cached_all_prompts_device = None
 
     # ==========================================================
     # Training forward

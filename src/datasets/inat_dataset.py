@@ -14,6 +14,7 @@ from torch.utils.data import Dataset
 import torchvision.transforms as T
 from torchvision.transforms import InterpolationMode
 from torchvision.datasets import INaturalist
+from torchvision.io import read_image
 from PIL import Image
 
 
@@ -21,29 +22,45 @@ CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_STD  = (0.26862954, 0.26130258, 0.27577711)
 
 
-def _make_transform():
+def _make_transform(use_torchvision_io=False):
     """
     CLIP-style preprocessing:
       - ensure RGB
       - Resize to 224 (short side) with bicubic interpolation
       - Center crop 224
       - Normalize with CLIP mean/std
+    
+    Args:
+        use_torchvision_io: If True, expects tensor input (CHW, uint8) from torchvision.io.read_image
+                           If False, expects PIL Image input
     """
+    if use_torchvision_io:
+        # Transform for torchvision.io.read_image output (tensor CHW, uint8 [0-255])
+        return T.Compose([
+            # Convert uint8 [0-255] to float [0-1]
+            T.Lambda(lambda x: x.float() / 255.0),
+            # Resize and crop (works on tensors)
+            T.Resize(224, interpolation=InterpolationMode.BICUBIC),
+            T.CenterCrop(224),
+            # Normalize with CLIP mean/std
+            T.Normalize(mean=CLIP_MEAN, std=CLIP_STD),
+        ])
+    else:
+        # Original PIL-based transform
+        def _safe_load(img):
+            try:
+                return img.convert("RGB")
+            except Exception:
+                import PIL.Image as Image
+                return Image.new("RGB", (224, 224))
 
-    def _safe_load(img):
-        try:
-            return img.convert("RGB")
-        except Exception:
-            import PIL.Image as Image
-            return Image.new("RGB", (224, 224))
-
-    return T.Compose([
-        _safe_load,
-        T.Resize(224, interpolation=InterpolationMode.BICUBIC),
-        T.CenterCrop(224),
-        T.ToTensor(),
-        T.Normalize(mean=CLIP_MEAN, std=CLIP_STD),
-    ])
+        return T.Compose([
+            _safe_load,
+            T.Resize(224, interpolation=InterpolationMode.BICUBIC),
+            T.CenterCrop(224),
+            T.ToTensor(),
+            T.Normalize(mean=CLIP_MEAN, std=CLIP_STD),
+        ])
 
 
 def _load_split_paths(root: str, version: str = "2021"):
@@ -334,10 +351,22 @@ class INatJSONDataset(Dataset):
         img_path, label = self.samples[idx]
 
         try:
-            img = Image.open(img_path).convert("RGB")
+            # Use torchvision.io.read_image for faster I/O (uses libjpeg-turbo/libpng)
+            # Returns tensor in CHW format, uint8 [0-255]
+            img = read_image(img_path)
+            # Ensure RGB (handle grayscale/alpha channels)
+            if img.shape[0] == 1:
+                # Grayscale: repeat to 3 channels
+                img = img.repeat(3, 1, 1)
+            elif img.shape[0] == 4:
+                # RGBA: take first 3 channels
+                img = img[:3]
+            elif img.shape[0] != 3:
+                # Unexpected: create blank RGB image
+                img = torch.zeros(3, 224, 224, dtype=torch.uint8)
         except Exception as e:
             # Fallback to blank image if loading fails
-            img = Image.new("RGB", (224, 224))
+            img = torch.zeros(3, 224, 224, dtype=torch.uint8)
 
         if self.transform:
             img = self.transform(img)
@@ -399,7 +428,10 @@ def get_inat(root: str, split: Literal["train", "val"], version: str = "2021", o
     Returns:
         Dataset with samples (image_tensor, label_int), where labels are species IDs in [0, num_classes).
     """
-    transform = _make_transform()
+    # Use faster torchvision.io-based transform for 2021 (custom loader)
+    # For 2018, keep PIL-based transform (torchvision's INaturalist uses PIL internally)
+    use_torchvision_io = (version == "2021")
+    transform = _make_transform(use_torchvision_io=use_torchvision_io)
 
     # For 2021, use custom JSON-based loader (more robust, doesn't require torchvision structure)
     if version == "2021":

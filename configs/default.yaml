@@ -7,7 +7,7 @@ model:
   clip_model: ViT-B/16
 
   # Number of sub-prompts per class
-  K: 1
+  K: 32
 
   # EM temperature schedule
   # em_tau_start: initial temperature (softer assignments)
@@ -17,11 +17,13 @@ model:
   em_tau_end: 0.05
 
 train:
-  batch_size: 16       # adjust based on GPU memory
+  batch_size: 96       # increased for speed: with 12 GPUs and 128GB memory, effective batch=1152
+  val_freq: 3          # validate every 3 epochs instead of every epoch (saves ~10-15 min per validation)
   lr: 5e-4             # lowered from 1e-3 (more stable for prompt tuning)
   epochs: 30
   warmup_steps: 2000
   lambda_mixture: 0.5  # weight for mixture loss vs classification loss
   temp_cls: 0.07       # temperature for classification logits
-  num_workers: 16      # increased for better I/O parallelism (you have 48 CPU cores)
-  prefetch_factor: 4   # prefetch more batches to keep GPU busy
+  num_workers: 12     # reduced from 24: system suggests max 16, using 12 to avoid overhead
+  prefetch_factor: 4   # reduced from 8: balance prefetching with memory usage
+  use_compile: true    # use torch.compile() for 20-30% speedup (PyTorch 2.0+)
