@@ -1,0 +1,5 @@
+# Force git to treat these as binary/ignored
+data/** -text linguist-vendored
+*.jpg -text linguist-vendored
+*.jpeg -text linguist-vendored
+*.png -text linguist-vendored

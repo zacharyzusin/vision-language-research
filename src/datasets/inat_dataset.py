@@ -47,20 +47,20 @@ def _make_transform(use_torchvision_io=False):
         ])
     else:
         # Original PIL-based transform
-        def _safe_load(img):
-            try:
-                return img.convert("RGB")
-            except Exception:
-                import PIL.Image as Image
-                return Image.new("RGB", (224, 224))
+    def _safe_load(img):
+        try:
+            return img.convert("RGB")
+        except Exception:
+            import PIL.Image as Image
+            return Image.new("RGB", (224, 224))
 
-        return T.Compose([
-            _safe_load,
-            T.Resize(224, interpolation=InterpolationMode.BICUBIC),
-            T.CenterCrop(224),
-            T.ToTensor(),
-            T.Normalize(mean=CLIP_MEAN, std=CLIP_STD),
-        ])
+    return T.Compose([
+        _safe_load,
+        T.Resize(224, interpolation=InterpolationMode.BICUBIC),
+        T.CenterCrop(224),
+        T.ToTensor(),
+        T.Normalize(mean=CLIP_MEAN, std=CLIP_STD),
+    ])
 
 
 def _load_split_paths(root: str, version: str = "2021"):

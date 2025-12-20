@@ -58,28 +58,17 @@ if [ ! -d "data/iNat2021/2021/train" ] || [ ! -d "data/iNat2021/2021/val" ]; the
   exit 2
 fi
 
-# Multi-node DDP setup
-# Get master node and port
-MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
-MASTER_PORT=29500
+# Multi-node DDP setup using srun (more reliable than torchrun for Slurm)
+# Slurm automatically handles multi-node communication
 NNODES=$SLURM_NNODES
-# Calculate node rank: find index of current hostname in node list
-HOSTNAMES=($(scontrol show hostnames $SLURM_JOB_NODELIST))
-NODE_RANK=0
-for i in "${!HOSTNAMES[@]}"; do
-    if [[ "${HOSTNAMES[$i]}" == "$(hostname)" ]]; then
-        NODE_RANK=$i
-        break
-    fi
-done
 GPUS_PER_NODE=8
+TOTAL_GPUS=$((NNODES * GPUS_PER_NODE))
 
 echo "Multi-node DDP configuration:"
-echo "  Master node: $MASTER_ADDR"
-echo "  Master port: $MASTER_PORT"
 echo "  Number of nodes: $NNODES"
 echo "  GPUs per node: $GPUS_PER_NODE"
-echo "  Total GPUs: $((NNODES * GPUS_PER_NODE))"
+echo "  Total GPUs: $TOTAL_GPUS"
+echo "  Node list: $SLURM_JOB_NODELIST"
 
 # Sanity check: confirm PyTorch sees the allocated GPUs
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES-<unset>}"
@@ -94,14 +83,16 @@ for i in range(torch.cuda.device_count()):
     print(i, torch.cuda.get_device_name(i))
 PY
 
-# Multi-node torchrun
-torchrun \
-    --nnodes=$NNODES \
-    --node_rank=$NODE_RANK \
-    --nproc_per_node=$GPUS_PER_NODE \
-    --master_addr=$MASTER_ADDR \
-    --master_port=$MASTER_PORT \
-    train.py --config configs/default.yaml
+# Use srun for multi-node (more reliable with Slurm)
+# srun automatically sets up the environment variables for multi-node DDP
+srun --ntasks=$TOTAL_GPUS \
+     --ntasks-per-node=$GPUS_PER_NODE \
+     python -m torch.distributed.run \
+     --nnodes=$NNODES \
+     --nproc_per_node=$GPUS_PER_NODE \
+     --rdzv_backend=c10d \
+     --rdzv_endpoint=${SLURM_NODELIST%%,*}:29500 \
+     train.py --config configs/default.yaml
 
 echo "Job finished at: $(date)"
 

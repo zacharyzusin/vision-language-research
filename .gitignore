@@ -2,6 +2,16 @@
 data/
 text_cache/
 
+# Dataset-specific directories (even if outside data/)
+kikibouba/
+kiki_bouba*/
+kiki_bouba_v1_split/
+kiki_bouba_v2_split/
+stanford_cars/
+car_devkit/
+cars_test/
+cars_train/
+
 # Python cache
 __pycache__/
 *.pyc
@@ -32,11 +42,22 @@ wandb/
 subprompt_results/
 viz_outputs/
 
-# Stanford Cars dataset (if downloaded manually)
-car_devkit/
-cars_test/
-cars_train/
---help/
+# Image files (dataset images should not be tracked)
+# Since data/ is already ignored above, all images in data/ are ignored
+# But we also need to catch images in kikibouba directories outside data/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.webp
+*.tiff
+*.tif
+# Exception: allow images in docs/ or examples/ if needed (uncomment if you have docs with images)
+# !docs/**/*.jpg
+# !docs/**/*.png
+# !examples/**/*.jpg
+# !examples/**/*.png
 
 # Jupyter Notebook
 .ipynb_checkpoints/

@@ -68,7 +68,7 @@ def validate(model, dataloader, device):
         if hasattr(model, "module"):
             preds = model.module.predict(images)
         else:
-            preds = model.predict(images)
+        preds = model.predict(images)
         correct += (preds == labels).sum().item()
         total += labels.size(0)
 
@@ -184,7 +184,7 @@ def train(config: dict, resume: str = None):
         if torch.cuda.is_available():
             torch.cuda.set_device(device)
     else:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if _is_main_process():
         print(f"Using device: {device} | distributed={use_ddp} | world_size={_get_world_size()}")
@@ -269,7 +269,7 @@ def train(config: dict, resume: str = None):
     # =====================
     if _is_main_process():
         print("[DEBUG] Initializing W&B...")
-        wandb.init(project="inat-mop-clip", config=config)
+    wandb.init(project="inat-mop-clip", config=config)
         print("[DEBUG] W&B initialized")
 
     # =====================
@@ -354,7 +354,7 @@ def train(config: dict, resume: str = None):
     # =====================
     if resume and os.path.exists(resume):
         if _is_main_process():
-            print(f"Resuming from checkpoint: {resume}")
+        print(f"Resuming from checkpoint: {resume}")
         ckpt = torch.load(resume, map_location=device)
 
         # Handle both DDP-wrapped and non-DDP checkpoints
@@ -371,13 +371,13 @@ def train(config: dict, resume: str = None):
         model.em_tau = current_tau
 
         if _is_main_process():
-            print(f"→ Resumed epoch {start_epoch}")
-            print(f"→ Resumed global step {step}")
-            print(f"→ Restored τ = {current_tau}")
+        print(f"→ Resumed epoch {start_epoch}")
+        print(f"→ Resumed global step {step}")
+        print(f"→ Restored τ = {current_tau}")
 
     ckpt_dir = os.path.join("checkpoints", experiment_name)
     if _is_main_process():
-        os.makedirs(ckpt_dir, exist_ok=True)
+    os.makedirs(ckpt_dir, exist_ok=True)
 
     # =====================
     # TRAIN LOOP
@@ -456,15 +456,15 @@ def train(config: dict, resume: str = None):
             running_loss += loss.item()
 
             if _is_main_process():
-                log_dict = {
-                    "loss": loss.item(),
-                    "tau": current_tau,
-                    "lr": optimizer.param_groups[0]["lr"],
-                    "step": step,
-                    "epoch": epoch,
-                }
-                log_dict.update(loss_dict)
-                wandb.log(log_dict)
+            log_dict = {
+                "loss": loss.item(),
+                "tau": current_tau,
+                "lr": optimizer.param_groups[0]["lr"],
+                "step": step,
+                "epoch": epoch,
+            }
+            log_dict.update(loss_dict)
+            wandb.log(log_dict)
 
             pbar.set_postfix({
                 "loss": f"{loss.item():.4f}",
@@ -480,15 +480,15 @@ def train(config: dict, resume: str = None):
         should_validate = (epoch % val_freq == 0) or (epoch == total_epochs)
         
         if should_validate:
-            val_acc = validate(model, val_loader, device)
+        val_acc = validate(model, val_loader, device)
 
-            is_best = val_acc > best_val
-            if is_best:
-                best_val = val_acc
+        is_best = val_acc > best_val
+        if is_best:
+            best_val = val_acc
 
             if _is_main_process():
-                print(f"Epoch {epoch}: Val Acc = {val_acc:.4f} (best={best_val:.4f})")
-                wandb.log({"val_acc": val_acc, "best_val_acc": best_val})
+        print(f"Epoch {epoch}: Val Acc = {val_acc:.4f} (best={best_val:.4f})")
+        wandb.log({"val_acc": val_acc, "best_val_acc": best_val})
         else:
             # Still log best_val_acc even if not validating
             if _is_main_process():
@@ -514,7 +514,7 @@ def train(config: dict, resume: str = None):
             print(f"Saved new BEST checkpoint: {ckpt_path}")
 
     if _is_main_process():
-        print("\nTraining Complete! Best Val Acc:", best_val)
+    print("\nTraining Complete! Best Val Acc:", best_val)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

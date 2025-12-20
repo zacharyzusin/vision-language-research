@@ -175,7 +175,7 @@ class MixturePromptCLIP(nn.Module):
         
         # CLIP-style similarity scaling factor
         self.sim_scale = 50.0
-        
+
         # Cache for _all_prompt_features to avoid recomputing every batch
         # This is expensive: (C, K, D) = (10000, 32, 512) = ~163M params
         self._cached_all_prompts = None
