@@ -1,0 +1,14 @@
+program: slurm/active/run_sweep_training_kikibouba_v2_1gpu.sh
+method: grid
+metric:
+  name: best_val_acc
+  goal: maximize
+parameters:
+  model.K:
+    values: [1, 2, 4, 8, 16, 32, 64, 128]
+project: kikibouba-v2-mop-clip
+name: k_sweep_kikibouba_v2_1node
+command:
+  - bash
+  - slurm/active/run_sweep_training_kikibouba_v2_1gpu.sh
+

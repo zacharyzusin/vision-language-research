@@ -1,0 +1,14 @@
+program: slurm/active/run_sweep_training_test_1gpu.sh
+method: grid
+metric:
+  name: best_val_acc
+  goal: maximize
+parameters:
+  model.K:
+    values: [1, 2]  # Just 2 K values for quick test
+project: inat-mop-clip
+name: k_sweep_test_1gpu
+command:
+  - bash
+  - slurm/active/run_sweep_training_test_1gpu.sh
+

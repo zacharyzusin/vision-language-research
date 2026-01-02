@@ -1,0 +1,24 @@
+dataset:
+  root: data/caltech101
+  type: caltech101
+
+model:
+  clip_model: ViT-B/16
+  K: 8
+  em_tau_start: 6.0
+  em_tau_end: 3.0
+  diversity_loss_weight: 20.0
+  entropy_loss_weight: 8.0
+  min_usage_loss_weight: 15.0
+  min_usage_threshold: 0.1
+
+train:
+  batch_size: 16
+  lr: 5e-4
+  epochs: 30
+  warmup_steps: 2000
+  lambda_mixture: 0.2
+  temp_cls: 0.07
+  num_workers: 8
+  prefetch_factor: 4
+

@@ -1,0 +1,1 @@
+slurm/active/run_sweep_training_1node.sh

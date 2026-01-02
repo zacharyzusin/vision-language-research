@@ -5,16 +5,26 @@ dataset:
 
 model:
   clip_model: ViT-B/16
-  K: 32
-  em_tau_start: 1.0
-  em_tau_end: 0.05
+  K: 4  # Using K=4 for visualization
+  
+  # EM temperature schedule - same improved settings as Stanford Cars
+  em_tau_start: 5.0  # Start very soft
+  em_tau_end: 2.5    # Allow some specialization for distinctness
+  
+  # Diversity and entropy regularization (to prevent mode collapse)
+  diversity_loss_weight: 10.0  # Strong push for distinctness
+  entropy_loss_weight: 3.0    # Ensure all sub-prompts are used
+  
+  # Minimum usage loss: force ALL sub-prompts to be used
+  min_usage_loss_weight: 5.0
+  min_usage_threshold: 0.1
 
 train:
   batch_size: 32       # Multiclass classification (5 classes)
   lr: 5e-4
   epochs: 30
   warmup_steps: 500    # Fewer warmup steps for smaller dataset
-  lambda_mixture: 0.5
+  lambda_mixture: 0.5  # Encourage specialization
   temp_cls: 0.07
   num_workers: 8
   prefetch_factor: 4

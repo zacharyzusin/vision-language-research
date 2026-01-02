@@ -1,0 +1,39 @@
+dataset:
+  root: data/fgvc-aircraft-2013b
+  type: fgvc_aircraft
+
+model:
+  # ViT-B/16 works well for fine-grained classification
+  clip_model: ViT-B/16
+
+  # Number of sub-prompts per class
+  K: 8
+
+  # EM temperature schedule
+  # For K=8, keep temperature higher to maintain soft assignments longer
+  # This allows entropy loss to effectively spread assignments across all 8 sub-prompts
+  em_tau_start: 6.0  # Start even softer for K=8
+  em_tau_end: 3.0    # Keep higher - maintain spreading across all 8 sub-prompts
+  # Higher temperature helps entropy loss work better with more sub-prompts
+
+  # Diversity and entropy regularization (to prevent mode collapse)
+  # For K=8, need EVEN stronger losses to force usage across all 8 sub-prompts
+  # With lambda_mixture reduced to 0.2, these losses will have more influence
+  diversity_loss_weight: 20.0  # Further increased - stronger orthogonalization now (0.5x weight)
+  entropy_loss_weight: 8.0     # Further increased - must aggressively spread across all 8 sub-prompts
+  
+  # Minimum usage loss: force ALL sub-prompts to be used
+  # For K=8, uniform distribution would be 0.125 per sub-prompt
+  # Need stronger penalty to ensure all 8 are utilized
+  min_usage_loss_weight: 15.0  # Further increased - must force use of all 8 sub-prompts
+  min_usage_threshold: 0.1     # Slightly higher threshold to force better usage
+
+train:
+  batch_size: 16       # adjust based on GPU memory
+  lr: 5e-4             # learning rate for prompt tuning
+  epochs: 30
+  warmup_steps: 2000
+  lambda_mixture: 0.2  # Reduced to allow entropy/diversity losses to spread assignments - specialization conflicts with spreading for K=8
+  temp_cls: 0.07       # temperature for classification logits
+  num_workers: 8       # FGVC Aircraft is similar size to Stanford Cars
+  prefetch_factor: 4   # prefetch batches to keep GPU busy

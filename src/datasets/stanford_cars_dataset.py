@@ -106,12 +106,13 @@ class StanfordCarsDataset(Dataset):
         if self.use_torchvision:
             try:
                 # torchvision uses "train" and "test" splits
+                # Note: torchvision's StanfordCars download is broken, so we skip automatic download
                 tv_split = "train" if self.split == "train" else "test"
                 self.base_dataset = StanfordCars(
                     root=root,
                     split=tv_split,
                     transform=None,  # We'll apply transform ourselves
-                    download=True,  # Allow automatic download if dataset not found
+                    download=False,  # Disabled - use manual download script instead
                 )
                 self.samples = [(idx, label) for idx, (_, label) in enumerate(self.base_dataset)]
                 self.num_classes = len(self.base_dataset.classes)
@@ -207,13 +208,32 @@ class StanfordCarsDataset(Dataset):
         # Filter by split
         all_train_samples = []
         all_test_samples = []
+        
+        # Determine image directory structure
+        # Try standard torchvision format first (all images in car_ims/)
         image_dir = os.path.join(root, "car_ims")
+        cars_train_dir = os.path.join(root, "cars_train")
+        cars_test_dir = os.path.join(root, "cars_test")
+        
+        # Check if images are in separate train/test directories
+        use_separate_dirs = os.path.exists(cars_train_dir) and os.path.exists(cars_test_dir)
         
         # annotations is a structured array or list of dicts
         if isinstance(annotations, dict):
             # Handle different annotation formats
             if 'annotations' in annotations:
                 annotations = annotations['annotations']
+        
+        # Check if annotations have a 'test' field
+        has_test_field = False
+        if len(annotations) > 0:
+            first_ann = annotations[0]
+            if hasattr(first_ann, 'dtype') and first_ann.dtype.names:
+                has_test_field = 'test' in first_ann.dtype.names
+            elif isinstance(first_ann, dict):
+                has_test_field = 'test' in first_ann or 'is_test' in first_ann
+            elif hasattr(first_ann, 'test'):
+                has_test_field = True
         
         # Process annotations - collect train and test separately
         for ann in annotations:
@@ -227,7 +247,11 @@ class StanfordCarsDataset(Dataset):
                 # Structured array with named fields
                 fname = str(ann['fname']) if 'fname' in ann.dtype.names else None
                 class_idx = int(ann['class']) if 'class' in ann.dtype.names else None
-                test = bool(ann['test']) if 'test' in ann.dtype.names else None
+                if 'test' in ann.dtype.names:
+                    test = bool(ann['test'])
+                else:
+                    # If no test field, assume all are training images
+                    test = False
             # Try dict format
             elif isinstance(ann, dict):
                 fname = ann.get('fname', ann.get('relative_im_path', ''))
@@ -243,7 +267,14 @@ class StanfordCarsDataset(Dataset):
                 try:
                     ann_len = len(ann)
                     # Format from our organize script: (fname, class, test, x1, y1, x2, y2)
-                    if ann_len >= 3:
+                    # Standard format: (x1, y1, x2, y2, class, fname) - no test field
+                    if ann_len >= 6:
+                        # Standard Stanford Cars format: (x1, y1, x2, y2, class, fname)
+                        fname = str(ann[5])
+                        class_idx = int(ann[4])
+                        test = False  # No test field in standard format
+                    elif ann_len >= 3:
+                        # Custom format with test field: (fname, class, test, ...)
                         fname = str(ann[0])
                         class_idx = int(ann[1])
                         test = bool(ann[2])
@@ -256,15 +287,31 @@ class StanfordCarsDataset(Dataset):
                 except (TypeError, ValueError, IndexError):
                     continue
             
-            if fname is None or class_idx is None or test is None:
+            if fname is None or class_idx is None:
                 continue
+            
+            # Default to False (training) if test is still None
+            if test is None:
+                test = False
             
             # Convert class from 1-indexed to 0-indexed (if needed)
             # Our combined format already uses 0-indexed, but check if it's 1-indexed
             if class_idx > 0:
                 class_idx = class_idx - 1
             
-            img_path = os.path.join(image_dir, fname)
+            # Try to find the image in multiple possible locations
+            img_path = None
+            if use_separate_dirs:
+                # Try separate train/test directories first
+                if test:
+                    img_path = os.path.join(cars_test_dir, fname)
+                else:
+                    img_path = os.path.join(cars_train_dir, fname)
+            
+            # If not found in separate dirs or separate dirs don't exist, try car_ims/
+            if img_path is None or not os.path.exists(img_path):
+                img_path = os.path.join(image_dir, fname)
+            
             if not os.path.exists(img_path):
                 continue
             

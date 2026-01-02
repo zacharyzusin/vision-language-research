@@ -41,6 +41,7 @@ wandb/
 # Output directories
 subprompt_results/
 viz_outputs/
+subprompt_viz_*/
 
 # Image files (dataset images should not be tracked)
 # Since data/ is already ignored above, all images in data/ are ignored

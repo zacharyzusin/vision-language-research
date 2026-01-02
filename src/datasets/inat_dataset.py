@@ -47,20 +47,20 @@ def _make_transform(use_torchvision_io=False):
         ])
     else:
         # Original PIL-based transform
-    def _safe_load(img):
-        try:
-            return img.convert("RGB")
-        except Exception:
-            import PIL.Image as Image
-            return Image.new("RGB", (224, 224))
+        def _safe_load(img):
+            try:
+                return img.convert("RGB")
+            except Exception:
+                import PIL.Image as Image
+                return Image.new("RGB", (224, 224))
 
-    return T.Compose([
-        _safe_load,
-        T.Resize(224, interpolation=InterpolationMode.BICUBIC),
-        T.CenterCrop(224),
-        T.ToTensor(),
-        T.Normalize(mean=CLIP_MEAN, std=CLIP_STD),
-    ])
+        return T.Compose([
+            _safe_load,
+            T.Resize(224, interpolation=InterpolationMode.BICUBIC),
+            T.CenterCrop(224),
+            T.ToTensor(),
+            T.Normalize(mean=CLIP_MEAN, std=CLIP_STD),
+        ])
 
 
 def _load_split_paths(root: str, version: str = "2021"):
@@ -162,8 +162,18 @@ class SubsetDataset(Dataset):
                 img = Image.open(path).convert("RGB")
             except Exception:
                 img = Image.new("RGB", (224, 224))
+            # Use PIL-based transform (SubsetDataset loads PIL Images, not tensors)
+            # Create a PIL-based transform if base_dataset.transform expects tensors
             if self.base_dataset.transform:
-                img = self.base_dataset.transform(img)
+                # Check if transform expects tensor by trying to apply it
+                # If it fails, use PIL-based transform instead
+                try:
+                    img = self.base_dataset.transform(img)
+                except (AttributeError, TypeError):
+                    # Transform expects tensor, but we have PIL Image
+                    # Use PIL-based transform instead
+                    pil_transform = _make_transform(use_torchvision_io=False)
+                    img = pil_transform(img)
             return img, subset_label
         else:
             # samples are (base_idx, label) - delegate to base dataset

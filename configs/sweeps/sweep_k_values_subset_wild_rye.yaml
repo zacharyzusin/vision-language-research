@@ -1,0 +1,14 @@
+program: slurm/active/run_sweep_training_subset_wild_rye.sh
+method: grid
+metric:
+  name: best_val_acc
+  goal: maximize
+parameters:
+  model.K:
+    values: [1, 2, 4, 8, 16, 32, 64]  # 7 values: powers of 2
+project: inat-subset-wild-rye-mop-clip
+name: k_sweep_subset_wild_rye
+command:
+  - bash
+  - slurm/active/run_sweep_training_subset_wild_rye.sh
+

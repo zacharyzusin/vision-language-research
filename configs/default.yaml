@@ -13,8 +13,17 @@ model:
   # em_tau_start: initial temperature (softer assignments)
   em_tau_start: 1.0
   # em_tau_end: final temperature (sharper, more specialized)
-  # Lowered from 0.3 to 0.05 for better specialization
-  em_tau_end: 0.05
+  # Increased to 0.7 to keep assignments softer and prevent collapse to single sub-prompt
+  # Higher temperature = softer assignments = better spreading across sub-prompts
+  em_tau_end: 0.7
+
+  # Diversity and entropy regularization (to prevent mode collapse)
+  diversity_loss_weight: 1.0  # Strong penalty for similar sub-prompts (ensures feature diversity)
+  entropy_loss_weight: 0.15   # Forces spreading of assignments across sub-prompts
+  
+  # Minimum usage loss: force ALL sub-prompts to be used (optional, default disabled)
+  min_usage_loss_weight: 0.0  # Set to >0 to force all K sub-prompts to be used (e.g., 5.0)
+  min_usage_threshold: 0.05   # Minimum average gamma per sub-prompt to avoid penalty
 
 train:
   batch_size: 96       # increased for speed: with 12 GPUs and 128GB memory, effective batch=1152

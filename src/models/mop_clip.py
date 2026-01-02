@@ -37,6 +37,10 @@ class MixturePromptCLIP(nn.Module):
         use_semantic_init: bool = True,
         offset_reg_weight: float = 0.001,
         use_hard_assignment: bool = False,
+        diversity_loss_weight: float = 0.1,
+        entropy_loss_weight: float = 0.01,
+        min_usage_loss_weight: float = 0.0,
+        min_usage_threshold: float = 0.05,
     ):
         """
         Initialize MixturePromptCLIP model.
@@ -49,6 +53,10 @@ class MixturePromptCLIP(nn.Module):
             em_tau: Temperature parameter for soft EM assignments (higher = softer)
             cache_dir: Directory for caching (currently unused, kept for compatibility)
             templates: Optional list of template strings. If None, auto-detects based on metadata.
+            diversity_loss_weight: Weight for diversity loss (penalizes high similarity between sub-prompts)
+            entropy_loss_weight: Weight for entropy regularization (encourages spreading assignments)
+            min_usage_loss_weight: Weight for minimum usage loss (forces all sub-prompts to be used)
+            min_usage_threshold: Minimum average gamma per sub-prompt to avoid penalty (default 0.05)
         """
         super().__init__()
 
@@ -171,6 +179,12 @@ class MixturePromptCLIP(nn.Module):
         
         # Regularization strength for prompt offsets
         self.offset_reg_weight = offset_reg_weight
+        
+        # Diversity and entropy regularization weights (for preventing mode collapse)
+        self.diversity_loss_weight = float(diversity_loss_weight)
+        self.entropy_loss_weight = float(entropy_loss_weight)
+        self.min_usage_loss_weight = float(min_usage_loss_weight)
+        self.min_usage_threshold = float(min_usage_threshold)
         self.use_hard_assignment = use_hard_assignment
         
         # CLIP-style similarity scaling factor
@@ -313,16 +327,126 @@ class MixturePromptCLIP(nn.Module):
         reg_loss = self.offset_reg_weight * (self.prompt_offsets ** 2).mean()
 
         # ==========================================================
+        # Diversity loss: prevent sub-prompts from collapsing to same representation
+        # ==========================================================
+        diversity_loss = 0.0
+        if self.diversity_loss_weight > 0:
+            # For each class in the batch, compute pairwise similarities between sub-prompts
+            # prompt_feats: (B, K, D) - prompt features for classes in this batch
+            # We want to penalize high similarity between different k values
+            
+            # Normalize prompt features (they should already be normalized, but ensure it)
+            prompt_feats_norm = F.normalize(prompt_feats, dim=-1)  # (B, K, D)
+            
+            # Compute pairwise cosine similarities: (B, K, K)
+            pairwise_sims = torch.bmm(prompt_feats_norm, prompt_feats_norm.transpose(1, 2))  # (B, K, K)
+            
+            # Mask out diagonal (self-similarity = 1.0) and average over batch
+            # Create mask to exclude diagonal elements
+            K = pairwise_sims.shape[1]
+            mask = torch.eye(K, device=device, dtype=torch.bool).unsqueeze(0)  # (1, K, K)
+            
+            # Get upper triangle (to avoid counting each pair twice)
+            triu_mask = torch.triu(torch.ones(K, K, device=device, dtype=torch.bool), diagonal=1).unsqueeze(0)
+            
+            # Extract pairwise similarities (excluding diagonal)
+            pairwise_sims_flat = pairwise_sims[triu_mask.expand_as(pairwise_sims)]
+            
+            # Penalize high similarity (we want sub-prompts to be different)
+            # MUCH more aggressive penalty structure to force separation:
+            # - Even low similarities (>0.1): small penalty - push apart early
+            # - Moderate similarities (>0.3): squared penalty - stronger push
+            # - High similarities (>0.5): 4th power - very strong push
+            # - Very high similarities (>0.7): 8th power - extremely strong push (catastrophic)
+            # This ensures we actively push apart similar sub-prompts at multiple levels
+            low_sim_mask = pairwise_sims_flat > 0.1
+            moderate_sim_mask = pairwise_sims_flat > 0.3
+            high_sim_mask = pairwise_sims_flat > 0.5
+            very_high_sim_mask = pairwise_sims_flat > 0.7
+            
+            # Catastrophic penalty for extremely similar pairs (8th power) - sub-prompts should be <0.7
+            very_high_penalty = (pairwise_sims_flat[very_high_sim_mask] ** 8).sum() if very_high_sim_mask.any() else torch.tensor(0.0, device=device)
+            # Very strong penalty for highly similar pairs (4th power)
+            high_penalty = (pairwise_sims_flat[high_sim_mask & ~very_high_sim_mask] ** 4).sum() if (high_sim_mask & ~very_high_sim_mask).any() else torch.tensor(0.0, device=device)
+            # Strong penalty for moderately similar pairs (squared)
+            moderate_penalty = (pairwise_sims_flat[moderate_sim_mask & ~high_sim_mask] ** 2).sum() if (moderate_sim_mask & ~high_sim_mask).any() else torch.tensor(0.0, device=device)
+            # Small penalty for low similarities (linear, weighted less)
+            low_penalty = (pairwise_sims_flat[low_sim_mask & ~moderate_sim_mask] * 0.1).sum() if (low_sim_mask & ~moderate_sim_mask).any() else torch.tensor(0.0, device=device)
+            
+            # Also add explicit orthogonalization: penalize any similarity > 0
+            # This encourages sub-prompts to be as orthogonal as possible
+            # Increased weight for K=8 - need stronger force to separate all 8 sub-prompts
+            orthogonalization_penalty = (pairwise_sims_flat.abs() ** 2).mean()
+            
+            diversity_loss = (very_high_penalty + high_penalty + moderate_penalty + low_penalty + 0.5 * orthogonalization_penalty) / pairwise_sims_flat.shape[0]  # Normalize by number of pairs
+
+        # ==========================================================
+        # Entropy regularization: encourage spreading assignments across sub-prompts
+        # ==========================================================
+        entropy_loss = 0.0
+        if self.entropy_loss_weight > 0 and not self.use_hard_assignment:
+            # Compute entropy of assignments: -sum(gamma * log(gamma))
+            # Higher entropy = more uniform distribution = better spreading
+            # We want to maximize entropy, so we minimize negative entropy
+            entropy = -(gamma * torch.log(gamma + 1e-10)).sum(dim=1).mean()  # Average over batch
+            entropy_loss = -entropy  # Negative because we want to maximize entropy
+
+        # ==========================================================
+        # Minimum usage loss: force ALL sub-prompts to be used
+        # ==========================================================
+        min_usage_loss = 0.0
+        if self.min_usage_loss_weight > 0 and not self.use_hard_assignment:
+            # Compute average gamma for each sub-prompt across the batch
+            # gamma: (B, K) - assignment probabilities for each image to each sub-prompt
+            avg_gamma_per_k = gamma.mean(dim=0)  # (K,) - average usage of each sub-prompt
+            
+            # Penalize when average gamma for any sub-prompt is below threshold
+            # This forces the model to use ALL sub-prompts, not just a subset
+            # Use ReLU to only penalize when below threshold
+            threshold = self.min_usage_threshold
+            underused_mask = avg_gamma_per_k < threshold
+            if underused_mask.any():
+                # Quadratic penalty for sub-prompts with usage below threshold
+                # This creates a strong gradient to increase usage
+                underused_avg = avg_gamma_per_k[underused_mask]
+                deficits = threshold - underused_avg  # How much below threshold
+                min_usage_loss = (deficits ** 2).mean()  # Mean squared deficit
+            
+            # Also add a small uniform penalty: encourage average usage to be close to 1/K
+            # This helps balance usage across all sub-prompts
+            target_usage = 1.0 / gamma.shape[1]  # 1/K
+            uniform_penalty = ((avg_gamma_per_k - target_usage) ** 2).mean()
+            min_usage_loss = min_usage_loss + 0.1 * uniform_penalty
+
+        # ==========================================================
         # Combined loss
         # ==========================================================
-        loss = lambda_mixture * loss_mixture + (1.0 - lambda_mixture) * loss_cls + reg_loss
+        loss = (
+            lambda_mixture * loss_mixture + 
+            (1.0 - lambda_mixture) * loss_cls + 
+            reg_loss +
+            self.diversity_loss_weight * diversity_loss +
+            self.entropy_loss_weight * entropy_loss +
+            self.min_usage_loss_weight * min_usage_loss
+        )
 
-        return loss, {
+        loss_dict = {
             "loss_mixture": loss_mixture.item(),
             "loss_cls": loss_cls.item(),
             "loss_reg": reg_loss.item(),
             "loss_total": loss.item(),
         }
+        
+        if self.diversity_loss_weight > 0:
+            loss_dict["loss_diversity"] = diversity_loss.item()
+        
+        if self.entropy_loss_weight > 0:
+            loss_dict["loss_entropy"] = entropy_loss.item()
+        
+        if self.min_usage_loss_weight > 0:
+            loss_dict["loss_min_usage"] = min_usage_loss.item()
+
+        return loss, loss_dict
 
     # ==========================================================
     # Prediction over all classes (chunked)
